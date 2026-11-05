@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DRCF Broker Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Layout: summary strip, then topology + step inspector side by side, then data and costs. */
+  --bg: #f4f5f2; --panel: #ffffff; --ink: #18212b; --muted: #5d6874; --line: #d9ddd6;
+  --accent: #2451c7; --b1: #127a7a; --b2: #b0522a; --good: #2d7a4a; --bad: #c0362c; --warn: #b07a12;
+  --soft: #eef0ec;
+  --display: "IBM Plex Sans Condensed", "Arial Narrow", sans-serif;
+  --body: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12171d; --panel: #1a2129; --ink: #e4e8ec; --muted: #97a2ad; --line: #2c3540;
+    --accent: #7b9bff; --b1: #3bb8b4; --b2: #e5865b; --good: #5cc17f; --bad: #ff6b5e; --warn: #e2b04a; --soft: #222a33;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12171d; --panel: #1a2129; --ink: #e4e8ec; --muted: #97a2ad; --line: #2c3540;
+  --accent: #7b9bff; --b1: #3bb8b4; --b2: #e5865b; --good: #5cc17f; --bad: #ff6b5e; --warn: #e2b04a; --soft: #222a33;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--body); }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 20px 20px 48px; display: grid; gap: 18px; }
+h1 { font: 600 28px/1.15 var(--display); margin: 0; letter-spacing: .01em; text-wrap: balance; }
+h2 { font: 600 17px/1.2 var(--display); margin: 0 0 10px; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); }
+.sub { color: var(--muted); max-width: 72ch; margin: 4px 0 0; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; min-width: 0; }
+header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 14px; align-items: end; }
+.checks { display: flex; flex-wrap: wrap; gap: 8px; }
+.pill { display: inline-flex; gap: 6px; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 13px; border: 1px solid var(--line); background: var(--panel); white-space: nowrap; }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+.pill.bad::before { background: var(--bad); }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+svg text { font-family: var(--body); fill: var(--ink); }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+button { font: 500 14px var(--body); color: var(--ink); background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.toggle input { accent-color: var(--bad); }
+.steps { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; max-height: 330px; overflow-y: auto; }
+.steps li button { width: 100%; text-align: left; display: grid; grid-template-columns: 80px 1fr auto; gap: 8px; background: transparent; border: 0; border-left: 3px solid transparent; border-radius: 0; padding: 5px 8px; }
+.steps li button[aria-current="step"] { background: var(--soft); border-left-color: var(--accent); }
+.steps .ph { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding-top: 2px; }
+.steps .cost { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+.steps li.attack .nm { color: var(--bad); }
+.inspect h3 { font: 600 20px/1.2 var(--display); margin: 0; }
+.kv { display: flex; flex-wrap: wrap; gap: 14px; margin: 8px 0 12px; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; }
+.kv b { color: var(--ink); font-weight: 600; }
+.views { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 520px) { .views { grid-template-columns: 1fr; } }
+.view { border: 1px solid var(--line); border-radius: 6px; padding: 10px; border-top: 4px solid var(--b1); min-width: 0; }
+.view.b2 { border-top-color: var(--b2); }
+.view .who { font-weight: 600; font-size: 13px; }
+.view .val { overflow-wrap: anywhere; margin-top: 4px; }
+.view.hidden .val { filter: blur(4px); user-select: none; }
+.recon { margin-top: 10px; padding: 10px; border-radius: 6px; background: var(--soft); font-size: 14px; }
+.note { color: var(--muted); font-size: 13.5px; margin: 8px 0 0; max-width: 75ch; }
+.chartbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+select { font: 14px var(--body); color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); }
+.legend span::before { content: ""; display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 6px; background: currentColor; }
+.lg-read { color: var(--ink); } .lg-fc { color: var(--accent); } .lg-al { color: var(--bad); } .lg-sp { color: var(--warn); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 14px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 500; font-size: 13px; }
+td.n, th.n { text-align: right; }
+.bar { height: 8px; border-radius: 4px; background: var(--accent); min-width: 2px; }
+.tablewrap { overflow-x: auto; }
+.res { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; }
+.res div { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-variant-numeric: tabular-nums; font-size: 13px; }
+.res div.al { border-color: var(--bad); box-shadow: inset 3px 0 0 var(--bad); }
+.res small { color: var(--muted); display: block; }
+footer { color: var(--muted); font-size: 13px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>DRCF: two brokers, no single point of trust</h1>
+      <p class="sub">A replay of one real run of the DRCF pipeline. Both brokers ran as separate C++ processes: ASCON-128 inside garbled circuits (EMP), BFV cross terms (SEAL), and 2-party ECDSA and Schnorr on P-256 (OpenSSL). Every share, ciphertext, timing and byte count below comes from that run.</p>
+    </div>
+    <div class="checks" id="checks"></div>
+  </header>
+
+  <div class="grid2">
+    <section class="panel" aria-labelledby="topo-h">
+      <h2 id="topo-h">Protocol flow</h2>
+      <svg id="topo" viewBox="0 0 760 380" role="img" aria-label="Publishers send to brokers B1 and B2, which compute jointly and deliver to the subscriber"></svg>
+      <div class="controls">
+        <button class="primary" id="play" type="button">Play</button>
+        <button id="prev" type="button">Previous step</button>
+        <button id="next" type="button">Next step</button>
+        <button id="reset" type="button">Restart</button>
+      </div>
+      <div class="controls" role="group" aria-label="Attack scenarios">
+        <label class="toggle" for="atkPub"><input type="checkbox" id="atkPub"> Tamper a publication</label>
+        <label class="toggle" for="atkCy"><input type="checkbox" id="atkCy"> Tamper the result C<sub>Y</sub></label>
+        <label class="toggle" for="atkB1"><input type="checkbox" id="atkB1"> Attacker controls B1</label>
+      </div>
+      <p class="note" id="atkNote"></p>
+    </section>
+
+    <section class="panel inspect" aria-live="polite">
+      <h2>Current step</h2>
+      <h3 id="sName"></h3>
+      <div class="kv"><span>Phase <b id="sPhase"></b></span><span>Time <b id="sMs"></b></span><span>Traffic <b id="sBytes"></b></span><span>AND gates <b id="sAnd"></b></span></div>
+      <p id="sWhat" style="margin:0 0 12px"></p>
+      <div class="views">
+        <div class="view" id="v1"><div class="who" style="color:var(--b1)">What B1 sees</div><div class="val mono" id="sB1"></div></div>
+        <div class="view b2" id="v2"><div class="who" style="color:var(--b2)">What B2 sees</div><div class="val mono" id="sB2"></div></div>
+      </div>
+      <div class="recon" id="recon"></div>
+      <h2 style="margin-top:16px">All steps</h2>
+      <ol class="steps" id="steps"></ol>
+    </section>
+  </div>
+
+  <section class="panel" aria-labelledby="ch-h">
+    <div class="chartbar">
+      <h2 id="ch-h" style="margin:0">Smart-meter load and the jointly computed forecast</h2>
+      <label for="meter" style="font-size:14px">Meter <select id="meter"></select></label>
+    </div>
+    <div class="legend"><span class="lg-read">Reading (Wh)</span><span class="lg-fc">AR forecast from shares</span><span class="lg-al">Alert raised in GC</span><span class="lg-sp">Injected spike</span></div>
+    <svg id="chart" viewBox="0 0 1180 300" role="img" aria-label="Hourly readings and forecast over 7 days"></svg>
+    <p class="note" id="chartNote"></p>
+  </section>
+
+  <div class="grid2">
+    <section class="panel" aria-labelledby="sub-h">
+      <h2 id="sub-h">What the subscriber receives</h2>
+      <p class="note" style="margin-top:0" id="subReq"></p>
+      <div class="res" id="res"></div>
+      <div class="tablewrap" style="margin-top:12px"><table><tbody id="sigs"></tbody></table></div>
+    </section>
+    <section class="panel" aria-labelledby="cost-h">
+      <h2 id="cost-h">Cost per step</h2>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Step</th><th class="n">ms</th><th class="n">KiB</th><th class="n">AND gates</th><th style="width:28%">share of time</th></tr></thead>
+        <tbody id="costs"></tbody>
+      </table></div>
+      <p class="note">Localhost, 2 cores, semi-honest setting as in the paper. Traffic counts both directions between B1 and B2.</p>
+    </section>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+// Generated by drcf_demo (C++ brokers B1/B2, EMP sh2pc + SEAL + OpenSSL). Do not edit.
+window.DRCF_TRACE = {
+  generated: "2026-11-05",
+  params: {meters: 3, hours: 168, t: "2199023190017", scaleBeta: 1000, alertWh: 900, beta: [45568,250,-94,763], heN: 8192, curve: "P-256", cipher: "ASCON-128 (v1.2)"},
+  checks: {tagsValid: 504, readings: 504, ecdsa: 1, schnorr: 1, tamperedRejected: 1, resultMatches: 24, resultSize: 24},
+  steps: [
+    {phase: "Setup", name: "DistAEAD.Setup", from: "Dealer", to: "B1,B2", what: "Each publisher P_m and the subscriber S get K; brokers get XOR shares K(1), K(2)", ms: 0.004548, bytes: 0, ands: 0, b1: "K_P0(1) = eada601c51c56f3daa3ed96eed0a06d3", b2: "K_P0(2) = 30657d7eaf482ba770729692a3bd073e"},
+    {phase: "Setup", name: "TS.KeyGen (ECDSA)", from: "B1", to: "B2", what: "Multiplicative key shares x1, x2; public tvk = x1·x2·G", ms: 7.6454, bytes: 66, ands: 0, b1: "x1 (secret), tvk = 031ba14b247027f6c990642f978ec5333396aec0a1d54ca9a67ec2e295dde55f84", b2: "x2 (secret), tvk = 031ba14b247027f6c990642f978ec5333396aec0a1d54ca9a67ec2e295dde55f84"},
+    {phase: "Setup", name: "TS.KeyGen (Schnorr)", from: "B1", to: "B2", what: "Additive key shares; public pk = X1 + X2", ms: 2.165, bytes: 66, ands: 0, b1: "pk = 028e5a6f1cbd6cb6a2ed3427789a1cec40bf61841e368a32d6b2d10499821b2db5", b2: "pk = 028e5a6f1cbd6cb6a2ed3427789a1cec40bf61841e368a32d6b2d10499821b2db5"},
+    {phase: "Setup", name: "Model shares", from: "Model owner", to: "B1,B2", what: "AR(1,2,24) coefficients beta = beta(1) + beta(2) mod t (fixed point x1000)", ms: 0.002887, bytes: 0, ands: 0, b1: "beta(1) = [235514463214, 195301950674, 1193758956346, 998900381070]", b2: "beta(2) = [1963508772371, 2003721239593, 1005264233577, 1200122809710]"},
+    {phase: "Publish", name: "DistAEAD.Dec", from: "Publishers", to: "B1,B2", what: "504 readings; ASCON-128 decrypted inside a garbled circuit; 504 tags valid", ms: 817.055, bytes: 184503412, ands: 5741064, b1: "C = 4b04b8a87a36118dd5d82cbd3b4c8e1146b4b9dc | M(1) = 9b08dfc1", b2: "C = 4b04b8a87a36118dd5d82cbd3b4c8e1146b4b9dc | M(2) = a20bdfc1"},
+    {phase: "Publish", name: "Tampered publication", from: "Attacker", to: "B1,B2", what: "Tag check failed inside the circuit: both brokers output ⊥, plaintext never opened", ms: 1.70006, bytes: 303090, ands: 9472, b1: "⊥", b2: "⊥"},
+    {phase: "Publish", name: "B2A (XOR → additive)", from: "B1", to: "B2", what: "GC converts XOR shares of each int32 reading into additive shares mod t (t = 2199023190017)", ms: 42.9735, bytes: 7455200, ands: 223776, b1: "D(1)[0][19] = 617011102255", b2: "D(2)[0][19] = 1582012088587"},
+    {phase: "Compute", name: "HE cross terms (BFV)", from: "B1", to: "B2", what: "432 AR forecasts in one batched BFV round trip each way (N = 8192, own keys per broker); noise budget left 79 bits", ms: 28.4706, bytes: 1835492, ands: 0, b1: "Enc_1(x(1)) → B2, gets Dec(b(2)·x(1) + ρ)", b2: "Enc_2(x(2)) → B1, keeps −Σρ"},
+    {phase: "Compute", name: "GC threshold (anomaly)", from: "B1", to: "B2", what: "|1000·x_t − ŷ_t| > 900000 decided in a garbled circuit; output stays XOR-shared", ms: 40.1529, bytes: 7560064, ands: 219888, b1: "alert(1) bits", b2: "alert(2) bits"},
+    {phase: "Subscribe", name: "A2B (additive → XOR)", from: "B1", to: "B2", what: "Requested result Y (24 forecasts + 24 alert flags, 216 B) as XOR shares Y(1) ⊕ Y(2)", ms: 1.73125, bytes: 341952, ands: 10680, b1: "Y(1) = 6c09e9030a4c3d62f08c71e7ef16ceedebace1416353fb1c…", b2: "Y(2) = 33dbee030a4c3d62d4d279e7ef16ceedaa81e6416353fb1c…"},
+    {phase: "Subscribe", name: "DistAEAD.Enc", from: "B1", to: "B2", what: "ASCON-128 encryption of Y under the subscriber key, inside a garbled circuit", ms: 8.27589, bytes: 2207592, ands: 68864, b1: "C_Y = d4f58b7b8701aa34379707fbb1bfd6ad144f6c7da9c3574d18394c3f2aee4382b98f270762bd2782509e3b9ad034165ad55dd7e8e7611a5ca6863ee2fd001946…", b2: "C_Y = d4f58b7b8701aa34379707fbb1bfd6ad144f6c7da9c3574d18394c3f2aee4382b98f270762bd2782509e3b9ad034165ad55dd7e8e7611a5ca6863ee2fd001946…"},
+    {phase: "Subscribe", name: "TS.Sign (2-party ECDSA)", from: "B1", to: "B2", what: "k = k1·k2, two OT-based multiplications (Gilboa MtA); standard P-256 ECDSA output", ms: 26.9198, bytes: 96898, ands: 0, b1: "r = 13ce360f07d5e6a13f14058d43445cfe094cec86d755ef4d677b9eba56adb6c6", b2: "s = 07ec772b2412779ba26b37145aa002acb39ec43698b4dfc1550015129ee880dc"},
+    {phase: "Subscribe", name: "TS.Sign (2-party Schnorr)", from: "B1", to: "B2", what: "R = R1 + R2, s = s1 + s2", ms: 0.322949, bytes: 162, ands: 0, b1: "R = 02b9b678eac328e5e2910cce573e5d2ca8cdc16318dd70164dc06b0040b66af099", b2: "s = 26d3d259ec3d1efbf7f00e633b76c16e891d3f50ea7998079ea25c9a5d9abb09"},
+  ],
+  readings: [
+    [461,448,423,432,371,455,595,675,669,476,466,378,450,361,402,519,579,578,802,825,831,771,583,498,515,400,416,528,560,583,524,728,555,642,491,351,432,547,496,561,380,689,788,827,769,519,512,419,449,395,361,567,438,497,438,756,659,534,385,366,502,400,482,414,545,541,787,813,776,636,411,487,495,459,521,460,485,390,560,668,658,458,399,454,403,439,410,458,559,701,849,811,769,723,468,514,378,410,340,2233,515,517,714,733,551,601,425,549,432,459,481,435,448,591,736,813,732,623,586,532,525,544,459,475,429,472,595,805,755,639,595,541,366,563,524,597,582,656,833,920,896,695,644,508,542,502,536,601,524,647,689,855,661,646,551,2275,489,560,661,561,567,686,873,1004,805,724,709,597],
+    [590,585,565,636,573,610,743,1050,823,703,734,708,554,604,593,629,653,738,1020,1057,1018,813,723,712,532,582,511,596,643,674,690,840,841,649,481,674,685,587,609,653,600,671,1074,1147,944,847,619,560,584,555,564,608,607,591,825,800,895,650,677,517,647,695,593,521,553,831,1034,1020,955,810,613,518,701,762,607,553,536,549,750,833,838,686,618,576,505,474,531,564,686,835,916,1090,983,822,713,716,669,606,615,546,679,566,851,882,878,662,565,521,579,559,589,620,741,772,979,1152,988,852,672,484,698,664,613,704,755,735,893,1020,884,851,621,761,719,649,2436,710,747,912,1215,1179,1131,831,774,746,746,750,705,758,678,776,897,1052,1027,845,683,740,615,753,703,636,877,941,1187,1140,1081,1026,760,866],
+    [747,880,813,821,699,787,965,1066,995,894,820,699,689,780,858,752,866,966,1198,1328,1227,971,806,778,745,745,765,794,778,760,921,1051,985,865,785,689,842,735,715,806,849,979,1351,1349,1257,1036,879,824,731,830,713,753,726,793,902,1081,1048,793,867,691,715,683,724,675,775,948,1135,1399,1208,951,750,668,766,728,642,709,830,799,919,962,1076,935,854,818,778,848,904,876,897,1009,1306,1386,1173,1066,852,795,779,760,662,829,884,796,809,1036,1014,834,777,785,725,769,741,866,824,1080,1176,1285,1222,1033,814,807,741,886,799,842,797,901,936,1129,1303,949,814,808,868,842,846,949,929,1137,1342,1523,1368,1187,949,941,829,906,2635,790,836,903,1008,1191,1198,989,902,774,879,902,875,885,1013,1208,1300,1440,1439,1089,926,869],
+  ],
+  forecast: [
+    [467,469,420,442,422,483,593,637,689,479,509,396,431,396,448,514,581,529,794,807,812,748,548,505,495,424,420,502,581,547,528,664,617,629,492,359,430,554,477,557,394,669,731,822,762,559,522,408,471,425,389,565,446,503,432,726,663,555,392,382,505,409,485,423,537,555,769,812,761,647,468,466,508,442,510,443,942,262,554,685,664,464,448,442,450,437,433,472,536,652,799,793,766,704,490,526,412,440,392,1813,514,503,668,709,611,617,459,553,455,436,519,456,487,586,716,812,756,658,582,547,513,548,470,495,473,480,612,771,771,618,599,535,842,384,539,614,568,635,799,901,898,683,642,542],
+    [606,558,572,604,584,616,721,956,819,713,689,645,592,614,580,623,650,697,935,1057,1008,794,720,664,533,583,519,589,635,654,663,837,810,689,491,668,634,607,623,627,578,647,1021,1101,924,835,631,550,563,596,601,590,590,579,762,792,866,673,655,530,625,648,569,531,559,798,979,974,961,807,626,542,692,727,597,564,533,583,695,841,825,706,600,564,508,503,536,571,669,810,868,1049,992,811,710,680,614,637,615,553,682,600,808,873,887,676,606,518,619,580,590,1067,559,755,950,1143,980,868,660,530,692,669,631,688,745,705,857,975,899,853,634,718,715,625,2035,692,708,901,1125,1153,1082,843,791,708],
+    [734,830,782,793,705,766,899,1018,981,875,795,694,670,786,805,729,841,919,1125,1305,1192,974,801,762,737,719,768,752,760,736,878,998,983,866,744,713,779,720,695,777,794,923,1241,1269,1248,1007,840,772,700,808,700,712,716,791,856,1025,999,829,840,698,715,684,737,707,771,911,1080,1345,1191,934,774,668,749,721,652,681,824,798,863,907,1050,915,810,786,762,800,859,827,877,940,1235,1296,1151,1044,839,759,765,735,703,795,855,773,813,985,1014,902,753,759,724,773,740,839,832,1013,1140,1255,1233,1033,835,787,757,840,804,1262,603,868,907,1074,1243,957,801,795,817,835,834,904,893,1083,1276,1419,1327,1176,907,893],
+  ],
+  alerts: [
+    [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  ],
+  spikes: [[0,99],[1,134],[2,146],[0,155],],
+  subscriber: {meter: 0, from: 144, req: "req/S7/F=forecast+alerts/meter0/last24h", forecast: [512.607,548.388,470.337,494.805,472.761,480.21,612.047,771.215,770.617,618.005,598.919,535.377,841.782,383.537,539.414,613.689,567.75,635.112,799.349,901.294,898.154,682.727,642.27,542.366], alerts: [0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0], CY: "d4f58b7b8701aa34379707fbb1bfd6ad144f6c7da9c3574d18394c3f2aee4382b98f270762bd2782509e3b9ad034165ad55dd7e8e7611a5ca6863ee2fd00194679d0cf1fca9377296e37afc281ae6259f6a9f4bdaccee85bc72c90f840dd6f6cf09108a638f1bbdab75075c483dc466924887dcf19be5159002bf88ef3bf0566cb74b2808570314b1e442ceb3d217e4b0e3fa8a919b5acf3011b2d2da590e9f9ecaff23152fa9f4f376c81c6c301237b41dff62bcc04246aaa55a50877f9ba8de742ea69e410f9da9f6be2e7ec3a6b36ec58bcf772150da8db58db3bf66628caab9c7787cb73d38f", ecdsa: {r: "13ce360f07d5e6a13f14058d43445cfe094cec86d755ef4d677b9eba56adb6c6", s: "07ec772b2412779ba26b37145aa002acb39ec43698b4dfc1550015129ee880dc", pk: "031ba14b247027f6c990642f978ec5333396aec0a1d54ca9a67ec2e295dde55f84"}, schnorr: {R: "02b9b678eac328e5e2910cce573e5d2ca8cdc16318dd70164dc06b0040b66af099", s: "26d3d259ec3d1efbf7f00e633b76c16e891d3f50ea7998079ea25c9a5d9abb09"}},
+  example: {K: "dabf1d62fe8d449ada4c4ffc4eb701ed", K1: "eada601c51c56f3daa3ed96eed0a06d3", K2: "30657d7eaf482ba770729692a3bd073e", value: 825, ad: "meter/0/h19", C: "4b04b8a87a36118dd5d82cbd3b4c8e1146b4b9dc", M1: "9b08dfc1", M2: "a20bdfc1"}
+};
+
+</script>
+<script>
+(() => {
+const T = window.DRCF_TRACE;
+const $ = id => document.getElementById(id);
+const NS = "http://www.w3.org/2000/svg";
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const fmt = (n, d = 1) => n.toLocaleString("en-CA", { maximumFractionDigits: d, minimumFractionDigits: d });
+const kib = b => b / 1024;
+const fmtBytes = b => b < 1024 ? b + " B" : b < 1048576 ? fmt(kib(b)) + " KiB" : fmt(b / 1048576, 2) + " MiB";
+const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+
+// ---------- summary checks ----------
+const C = T.checks;
+const pills = [
+  [`${C.tagsValid}/${C.readings} publications decrypted in GC`, C.tagsValid === C.readings],
+  ["Tampered publication rejected", true],
+  ["2-party ECDSA verified by OpenSSL", !!C.ecdsa],
+  ["2-party Schnorr verified", !!C.schnorr],
+  ["Tampered C_Y rejected", !!C.tamperedRejected],
+  [`Subscriber result ${C.resultMatches}/${C.resultSize} equal to plaintext model`, C.resultMatches === C.resultSize],
+];
+$("checks").innerHTML = pills.map(([t, ok]) => `<span class="pill${ok ? "" : " bad"}">${t}</span>`).join("");
+
+// ---------- steps ----------
+const steps = T.steps;
+const totalMs = steps.reduce((s, x) => s + x.ms, 0);
+const nodes = {
+  Dealer: [380, 30, "Key dealer"], "Model owner": [560, 30, "Model owner"],
+  P0: [70, 90, "Meter 0"], P1: [70, 190, "Meter 1"], P2: [70, 290, "Meter 2"],
+  B1: [360, 120, "Broker B1"], B2: [360, 270, "Broker B2"],
+  S: [680, 195, "Subscriber"], A: [200, 355, "Attacker"],
+};
+const svg = $("topo");
+// edges
+const edge = (a, b, dash) => el("line", { x1: nodes[a][0], y1: nodes[a][1], x2: nodes[b][0], y2: nodes[b][1], stroke: "var(--line)", "stroke-width": 1.5, "stroke-dasharray": dash || "" }, svg);
+["P0", "P1", "P2"].forEach(p => { edge(p, "B1"); edge(p, "B2"); });
+edge("B1", "S"); edge("B2", "S"); edge("Dealer", "B1", "4 4"); edge("Dealer", "B2", "4 4"); edge("Model owner", "B1", "4 4"); edge("Model owner", "B2", "4 4");
+const chan = el("line", { x1: 360, y1: 120, x2: 360, y2: 270, stroke: "var(--accent)", "stroke-width": 3, opacity: .35 }, svg);
+el("text", { x: 372, y: 200, "font-size": 12, fill: "var(--muted)" }, svg).textContent = "GC · OT · HE · signing";
+const atkEdges = [edge("A", "B1", "3 3"), edge("A", "B2", "3 3")];
+const nodeEls = {};
+for (const [k, [x, y, label]] of Object.entries(nodes)) {
+  const g = el("g", { "data-node": k }, svg);
+  const big = k === "B1" || k === "B2";
+  const col = k === "B1" ? "var(--b1)" : k === "B2" ? "var(--b2)" : k === "A" ? "var(--bad)" : k === "S" ? "var(--accent)" : "var(--muted)";
+  const r = el("rect", { x: x - (big ? 62 : 50), y: y - (big ? 24 : 16), width: big ? 124 : 100, height: big ? 48 : 32, rx: 6, fill: "var(--panel)", stroke: col, "stroke-width": big ? 2.5 : 1.5 }, g);
+  el("text", { x, y: y + 5, "text-anchor": "middle", "font-size": big ? 15 : 13, "font-weight": big ? 600 : 500 }, g).textContent = label;
+  const badge = el("text", { x, y: y + (big ? 42 : 32), "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, g);
+  nodeEls[k] = { g, r, badge, col };
+}
+const pkt = el("g", {}, svg);
+
+function flows(st) {
+  const n = st.name;
+  if (n.startsWith("DistAEAD.Setup")) return [["Dealer", "B1", "K(1)"], ["Dealer", "B2", "K(2)"]];
+  if (n.startsWith("Model shares")) return [["Model owner", "B1", "β(1)"], ["Model owner", "B2", "β(2)"]];
+  if (n.startsWith("TS.KeyGen")) return [["B1", "B2", "X1"], ["B2", "B1", "X2"]];
+  if (n === "DistAEAD.Dec") return [["P0", "B1", "C"], ["P1", "B2", "C"], ["P2", "B1", "C"], ["P0", "B2", "C"], ["B1", "B2", "GC"], ["B2", "B1", "OT"]];
+  if (n.startsWith("Tampered")) return [["A", "B1", "C*"], ["A", "B2", "C*"]];
+  if (n.startsWith("HE")) return [["B1", "B2", "Enc₁(x₁)"], ["B2", "B1", "Enc₁(β₂x₁+ρ)"], ["B2", "B1", "Enc₂(x₂)"], ["B1", "B2", "Enc₂(β₁x₂+ρ′)"]];
+  if (n.startsWith("TS.Sign")) return [["B1", "B2", "R₁"], ["B2", "B1", "s₂"], ["B1", "S", "σ"], ["B2", "S", "σ"]];
+  if (n === "DistAEAD.Enc") return [["B1", "B2", "GC"], ["B1", "S", "C_Y"]];
+  return [["B1", "B2", "GC"], ["B2", "B1", "OT"]];
+}
+
+function animate(st, done) {
+  pkt.innerHTML = "";
+  const fl = flows(st);
+  const bad = st.name.startsWith("Tampered");
+  const items = fl.map(([a, b, lab], i) => {
+    const g = el("g", {}, pkt);
+    el("circle", { r: 7, fill: bad ? "var(--bad)" : (a === "B1" ? "var(--b1)" : a === "B2" ? "var(--b2)" : "var(--accent)") }, g);
+    el("text", { x: 10, y: -8, "font-size": 12, "font-family": "var(--mono)", fill: "var(--ink)" }, g).textContent = lab;
+    return { g, a: nodes[a], b: nodes[b], delay: i * 160 };
+  });
+  if (reduce) { items.forEach(it => it.g.setAttribute("transform", `translate(${it.b[0]},${it.b[1]})`)); done && done(); return; }
+  const dur = 900, t0 = performance.now();
+  function frame(now) {
+    let all = true;
+    for (const it of items) {
+      let p = (now - t0 - it.delay) / dur; if (p < 1) all = false; p = Math.max(0, Math.min(1, p));
+      const e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      it.g.setAttribute("transform", `translate(${it.a[0] + (it.b[0] - it.a[0]) * e},${it.a[1] + (it.b[1] - it.a[1]) * e})`);
+      it.g.style.opacity = p >= 1 ? 0 : 1;
+    }
+    if (!all) raf = requestAnimationFrame(frame); else done && done();
+  }
+  cancelAnimationFrame(raf); raf = requestAnimationFrame(frame);
+}
+let raf = 0, cur = 0, playing = false, timer = 0;
+
+// ---------- hex helpers for live reconstruction ----------
+const hexBytes = h => (h.match(/[0-9a-f]{2}/g) || []).map(x => parseInt(x, 16));
+const xorHex = (a, b) => { const x = hexBytes(a), y = hexBytes(b); return x.map((v, i) => v ^ y[i]); };
+const toHex = arr => arr.map(v => v.toString(16).padStart(2, "0")).join("");
+const leU32 = arr => (arr[0] | arr[1] << 8 | arr[2] << 16 | arr[3] << 24) >>> 0;
+function reconText(st) {
+  const ex = T.example;
+  if (st.name === "DistAEAD.Setup") return `In the browser: K(1) ⊕ K(2) = <span class="mono">${toHex(xorHex(ex.K1, ex.K2))}</span>, which equals meter 0's key K. Neither share alone says anything about K.`;
+  if (st.name === "DistAEAD.Dec") { const m = xorHex(ex.M1, ex.M2); return `In the browser: M(1) ⊕ M(2) = <span class="mono">${toHex(m)}</span> = ${leU32(m)} Wh, meter 0's reading at hour 19 (topic <span class="mono">${ex.ad}</span>, true value ${ex.value} Wh). Each broker alone holds 4 uniformly random bytes.`; }
+  if (st.name.startsWith("B2A")) return `D(1) + D(2) mod t gives the reading again. Additive shares let the brokers run linear models locally and with HE.`;
+  if (st.name.startsWith("Tampered")) return `<b style="color:var(--bad)">Rejected.</b> One flipped ciphertext bit makes the in-circuit tag check output 0, so both brokers return ⊥ and never open the plaintext shares.`;
+  if (st.name.startsWith("HE")) return `Each broker encrypts its own share under its own BFV key. The other side multiplies by its β-share and adds a random mask ρ, so the key owner only ever decrypts masked values.`;
+  if (st.name.startsWith("GC threshold")) return `The alert bit is computed and kept as XOR shares, so neither broker learns which hours were flagged.`;
+  if (st.name.startsWith("TS.Sign")) return `The subscriber checks σ against the brokers' joint public key. Neither broker can sign alone.`;
+  return "";
+}
+
+const atk = { pub: false, cy: false, b1: false };
+function show(i) {
+  cur = Math.max(0, Math.min(steps.length - 1, i));
+  const st = steps[cur];
+  $("sName").textContent = st.name;
+  $("sPhase").textContent = st.phase;
+  $("sMs").textContent = fmt(st.ms, st.ms < 10 ? 2 : 1) + " ms";
+  $("sBytes").textContent = fmtBytes(st.bytes);
+  $("sAnd").textContent = st.ands.toLocaleString("en-CA");
+  $("sWhat").textContent = st.what;
+  $("sB1").textContent = st.b1 || "(nothing new)";
+  $("sB2").textContent = st.b2 || "(nothing new)";
+  $("v2").classList.toggle("hidden", atk.b1);
+  $("recon").innerHTML = atk.b1
+    ? `<b style="color:var(--bad)">Attacker view (B1 only).</b> B1's shares are uniformly random. Without B2's half, the attacker learns nothing about readings, keys or results.`
+    : reconText(st) || "Each broker's value alone is random-looking. Only the combination carries meaning.";
+  document.querySelectorAll("#steps button").forEach((b, k) => k === cur ? b.setAttribute("aria-current", "step") : b.removeAttribute("aria-current"));
+  const cb = document.querySelector(`#steps li:nth-child(${cur + 1})`); if (cb) cb.scrollIntoView({ block: "nearest" });
+  for (const k in nodeEls) nodeEls[k].badge.textContent = "";
+  if (st.name.startsWith("Tampered")) { nodeEls.B1.badge.textContent = "output ⊥"; nodeEls.B2.badge.textContent = "output ⊥"; }
+  if (st.name.startsWith("TS.Sign") && cur === steps.length - 1) nodeEls.S.badge.textContent = atk.cy ? "signature invalid: reject" : "σ valid · decrypt";
+  nodeEls.S.r.setAttribute("stroke", atk.cy && cur === steps.length - 1 ? "var(--bad)" : nodeEls.S.col);
+  nodeEls.B1.r.setAttribute("stroke", atk.b1 ? "var(--bad)" : nodeEls.B1.col);
+  animate(st, () => { if (playing) timer = setTimeout(() => { if (cur < steps.length - 1) show(cur + 1); else stop(); }, 650); });
+}
+function visibleSteps() { return steps.map((s, i) => i).filter(i => atk.pub || !steps[i].name.startsWith("Tampered")); }
+function stop() { playing = false; clearTimeout(timer); $("play").textContent = "Play"; }
+function nextIdx(d) { const v = visibleSteps(), p = v.indexOf(cur); return v[Math.max(0, Math.min(v.length - 1, (p < 0 ? 0 : p) + d))]; }
+
+$("steps").innerHTML = steps.map((s, i) => `<li class="${s.name.startsWith("Tampered") ? "attack" : ""}"><button type="button" data-i="${i}"><span class="ph">${s.phase}</span><span class="nm">${s.name}</span><span class="cost">${fmt(s.ms, s.ms < 10 ? 1 : 0)} ms</span></button></li>`).join("");
+$("steps").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { stop(); show(+b.dataset.i); } });
+$("play").addEventListener("click", () => { if (playing) return stop(); playing = true; $("play").textContent = "Pause"; if (cur >= steps.length - 1) cur = 0; show(cur); });
+$("next").addEventListener("click", () => { stop(); show(nextIdx(1)); });
+$("prev").addEventListener("click", () => { stop(); show(nextIdx(-1)); });
+$("reset").addEventListener("click", () => { stop(); show(0); });
+
+const notes = {
+  pub: "Tamper a publication: replays the real run in which one bit of a meter's ciphertext was flipped. The tag check inside the garbled circuit fails for both brokers.",
+  cy: "Tamper C_Y: the subscriber's signature check over (C_Y, req) fails for both the ECDSA and the Schnorr signature, so the result is dropped before decryption. This was tested in the same run.",
+  b1: "Attacker controls B1: the B2 column is hidden. Everything B1 holds (key shares, M(1), D(1), β(1), Y(1)) is uniformly random on its own. DRCF stays private as long as one broker is honest and they do not collude.",
+};
+function syncAtk() {
+  atk.pub = $("atkPub").checked; atk.cy = $("atkCy").checked; atk.b1 = $("atkB1").checked;
+  document.querySelectorAll("#steps li.attack").forEach(li => li.hidden = !atk.pub);
+  nodeEls.A.g.style.display = atk.pub ? "" : "none"; atkEdges.forEach(e => e.style.display = atk.pub ? "" : "none");
+  $("atkNote").textContent = ["pub", "cy", "b1"].filter(k => atk[k]).map(k => notes[k]).join(" ") || "Turn on an attack to see how the protocol responds. Each scenario was exercised in the recorded run.";
+  if (!atk.pub && steps[cur].name.startsWith("Tampered")) cur = nextIdx(1);
+  show(cur);
+}
+["atkPub", "atkCy", "atkB1"].forEach(id => $(id).addEventListener("change", syncAtk));
+
+// ---------- chart ----------
+const P = T.params, H = P.hours;
+$("meter").innerHTML = T.readings.map((_, m) => `<option value="${m}">Meter ${m}</option>`).join("");
+function drawChart(m) {
+  const s = $("chart"); s.innerHTML = "";
+  const W = 1180, Ht = 300, L = 56, R = 12, Tp = 12, B = 34;
+  const rd = T.readings[m], fc = T.forecast[m], al = T.alerts[m];
+  const all = rd.concat(fc); const ymax = Math.ceil(Math.max(...all) / 500) * 500, ymin = 0;
+  const x = h => L + (W - L - R) * h / (H - 1), y = v => Tp + (Ht - Tp - B) * (1 - (v - ymin) / (ymax - ymin));
+  for (let v = 0; v <= ymax; v += 500) {
+    el("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 }, s);
+    el("text", { x: L - 8, y: y(v) + 4, "text-anchor": "end", "font-size": 12, fill: "var(--muted)" }, s).textContent = v.toLocaleString("en-CA");
+  }
+  for (let d = 0; d < H / 24; d++) {
+    el("line", { x1: x(d * 24), x2: x(d * 24), y1: Tp, y2: Ht - B, stroke: "var(--line)", "stroke-dasharray": "2 4" }, s);
+    el("text", { x: x(d * 24 + 12), y: Ht - 12, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, s).textContent = `Day ${d + 1}`;
+  }
+  el("rect", { x: x(0), y: Tp, width: x(24) - x(0), height: Ht - Tp - B, fill: "var(--soft)", opacity: .7 }, s);
+  el("text", { x: x(12), y: Tp + 16, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, s).textContent = "warm-up (needs x(t−24))";
+  const path = (arr, off) => arr.map((v, i) => `${i ? "L" : "M"}${x(i + off).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  el("path", { d: path(rd, 0) + `L${x(H - 1)},${y(0)}L${x(0)},${y(0)}Z`, fill: "var(--ink)", opacity: .06 }, s);
+  el("path", { d: path(rd, 0), fill: "none", stroke: "var(--ink)", "stroke-width": 1.5 }, s);
+  el("path", { d: path(fc, 24), fill: "none", stroke: "var(--accent)", "stroke-width": 2 }, s);
+  T.spikes.filter(([mm]) => mm === m).forEach(([, h]) => el("circle", { cx: x(h), cy: y(rd[h]), r: 9, fill: "none", stroke: "var(--warn)", "stroke-width": 2 }, s));
+  al.forEach((a, i) => { if (a) el("circle", { cx: x(i + 24), cy: y(rd[i + 24]), r: 4.5, fill: "var(--bad)" }, s); });
+  if (m === T.subscriber.meter) {
+    const x0 = x(T.subscriber.from), x1 = x(H - 1);
+    el("rect", { x: x0, y: Tp, width: x1 - x0, height: 4, fill: "var(--accent)" }, s);
+    el("text", { x: x1, y: Tp + 18, "text-anchor": "end", "font-size": 12, fill: "var(--accent)" }, s).textContent = "window requested by the subscriber";
+  }
+  const sp = T.spikes.filter(([mm]) => mm === m).map(([, h]) => h);
+  const flagged = al.map((a, i) => a ? i + 24 : -1).filter(h => h >= 0);
+  const echoes = flagged.filter(h => !sp.includes(h));
+  $("chartNote").textContent = `${flagged.length} alert(s), ${sp.length} injected spike(s).` + (echoes.length
+    ? ` The extra alert at hour ${echoes.join(", ")} comes exactly 24 h after a spike: the model uses x(t−24), so the spike carries into the next day's forecast.`
+    : " Every alert matches an injected spike.");
+}
+$("meter").addEventListener("change", e => drawChart(+e.target.value));
+drawChart(0);
+
+// ---------- subscriber ----------
+const SB = T.subscriber;
+$("subReq").innerHTML = `Request <span class="mono">${SB.req}</span>. Brokers return ASCON ciphertext C<sub>Y</sub> (${hexBytes(SB.CY).length} bytes) with two threshold signatures. The subscriber verifies, then decrypts with its own key:`;
+$("res").innerHTML = SB.forecast.map((v, i) => { const h = SB.from + i; return `<div class="${SB.alerts[i] ? "al" : ""}"><small>Day ${Math.floor(h / 24) + 1}, ${String(h % 24).padStart(2, "0")}:00</small>${Math.round(v).toLocaleString("en-CA")} Wh${SB.alerts[i] ? " · alert" : ""}</div>`; }).join("");
+$("sigs").innerHTML = [
+  ["ECDSA r", SB.ecdsa.r], ["ECDSA s", SB.ecdsa.s], ["Joint public key", SB.ecdsa.pk], ["Schnorr R", SB.schnorr.R], ["Schnorr s", SB.schnorr.s],
+].map(([k, v]) => `<tr><th>${k}</th><td class="mono" style="overflow-wrap:anywhere">${v}</td></tr>`).join("");
+
+// ---------- costs ----------
+$("costs").innerHTML = steps.map(s => `<tr><td>${s.name}</td><td class="n">${fmt(s.ms, s.ms < 10 ? 2 : 1)}</td><td class="n">${fmt(kib(s.bytes))}</td><td class="n">${s.ands.toLocaleString("en-CA")}</td><td><div class="bar" style="width:${(100 * s.ms / totalMs).toFixed(1)}%"></div></td></tr>`).join("")
+  + `<tr><th>Total</th><th class="n">${fmt(totalMs)}</th><th class="n">${fmt(kib(steps.reduce((a, s) => a + s.bytes, 0)))}</th><th class="n">${steps.reduce((a, s) => a + s.ands, 0).toLocaleString("en-CA")}</th><th></th></tr>`;
+
+$("foot").textContent = `Run parameters: ${P.meters} meters × ${P.hours} h, ${P.cipher}, BFV N = ${P.heN}, t = ${P.t}, ${P.curve}, AR coefficients ×${P.scaleBeta} = [${P.beta.join(", ")}], alert threshold ${P.alertWh} Wh. Synthetic load data. Semi-honest model, demo-grade code.`;
+
+syncAtk();
+})();
+</script>
+</body>
+</html>
