@@ -136,6 +136,33 @@ Results on all 10 customers (350,880 half-hourly readings, localhost):
 
 Per customer: about 0.4 s of CKKS, 0.65 s of garbled circuits and 486 MiB of traffic between the brokers. The remaining gap to the published labels comes from their per-customer hyperparameter tuning, Prophet's Laplace changepoint prior and its simulated trend uncertainty, none of which are reproduced here.
 
+### Protocol VI: ML price forecasting on the Polish day-ahead market (Che & Wang, 2010)
+
+`src/protocol6_polish.cpp`, garbled-circuit SVR in `include/svr_gc.h`, model owner in `scripts/train_protocol6.py`.
+
+SVRARIMA as in the paper: min-max normalisation on the training window (Eq. 3.1); SVR on the phase-space reconstruction with m = 3, τ = 1 (Eq. 2.1–2.3); RBF kernel exp(−‖x − x′‖²/2δ²) with C = 1, δ = 20, ε = 0.001 (Figs. 4, 7); ARIMA on the SVR residuals with p = (24), d = (0), q = (1) for February weeks and p = (1, 24), d = (24), q = (1) for April weeks; training on the 7 days before each forecast week; one-hour-ahead forecasts; RMSE and MAPE. Test weeks are the paper's calendar weeks (Feb 26 – Mar 3, Apr 1 – 7) in 2018, 2019 and 2020.
+
+The model owner trains in the clear and secret-shares the model (Table A1 input β). Secure flow on shared prices:
+1. Garbled circuit: normalisation, then N_t = b + Σ α_k exp(−γ‖x_t − sv_k‖²) with support vectors, α and b all secret. exp is fixed point: 2^−y with y split into integer and fraction, a degree-4 polynomial for the fraction (error 3.5e-6) and a secret shift for the integer part. Residuals e_t = x_t − N_t leave the circuit as additive shares.
+2. CKKS cross terms: the ARIMA one-step forecast of the residual, written as its linear predictor Σ w_j e_{t−j} (AR(∞) form truncated at 144 lags).
+3. Garbled circuit: forecast = (N_t + L_t)·range + min, output as additive shares.
+
+```sh
+python3 scripts/train_protocol6.py <polish repo>/data/data.xlsx build
+cd build && ../run.sh ./protocol6_polish prices_p6.txt model_p6.txt reference_p6.txt
+```
+
+| week | MAPE, secure | MAPE, plaintext reference | SVR alone (plaintext) | max \|secure − reference\| |
+|---|---|---|---|---|
+| 2018-02-26 | 12.10% | 12.11% | 18.24% | 0.26 PLN |
+| 2019-02-26 | 5.94% | 5.96% | 14.31% | 0.24 PLN |
+| 2020-02-26 | 11.41% | 11.41% | 21.61% | 0.35 PLN |
+| 2018-04-01 | 7.35% | 7.35% | 26.87% | 0.30 PLN |
+| 2019-04-01 | 3.55% | 3.54% | 10.54% | 0.37 PLN |
+| 2020-04-01 | 5.18% | 5.18% | 17.10% | 0.38 PLN |
+
+As in the paper, the hybrid beats SVR alone every week. Cost per week (168 forecasts, 164 support vectors): about 13 s, 360 M AND gates and 11 GB of localhost traffic, almost all of it the 27,500 kernel evaluations in the garbled circuit.
+
 ## Protocol notes
 
 **DistAEAD.** ASCON-128 is written as a boolean circuit; public values (IV, nonce, associated data, ciphertext, tag) are folded as constants and cost no gates. One permutation round is 320 AND gates. With a = ⌊|AD|/8⌋+1 associated-data blocks (0 if AD is empty) and m = ⌊|M|/8⌋+1 message blocks, encryption costs (24 + 6a + 6(m − 1))·320 − 256 AND gates; decryption adds 127 for the in-circuit tag comparison. Decryption first opens only the tag bit; plaintext shares are released (as XOR shares) only if it is 1.
@@ -167,7 +194,8 @@ Full pipeline (`drcf_demo`: 3 meters × 168 hours, 504 publications, 432 forecas
 - **CKKS shares are statistically hidden.** Real-valued shares and masks have bounded range, so hiding is statistical: about 8 bits of margin for meter readings (mask 2^20), about 10 bits for model coefficients (mask 2^10), less for large coefficients such as an intercept. The evaluator's reply has no noise flooding. Results are approximate.
 - **Not audited, not constant-time.** Do not use with real keys or data.
 - **Demo harness.** `drcf_demo` gives both broker processes the same seed to generate synthetic data and simulates the publishers and the subscriber inside B1's process; brokers only feed their own shares into the protocols.
-- **Not yet included.** MQTT/Mosquitto integration and Protocols I, III, IV, V and VI of Table A1 (Protocol II is included).
+- **Not yet included.** MQTT/Mosquitto integration and Protocols I, III, IV and V of Table A1 (Protocols II and VI are included).
+- **Model training.** For Protocol VI the model owner trains in the clear on its own historical data and shares the model, as Table A1 assumes; training on shared data is not implemented.
 
 ## Citation
 
