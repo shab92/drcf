@@ -2,3 +2,4 @@ build/
 *.o
 *.a
 iot/data/
+__pycache__/
