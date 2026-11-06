@@ -69,11 +69,11 @@ Each protocol of the paper's Table A1 is implemented with the model from the pap
 
 | Protocol | Task | Model (paper) | Dataset | Status |
 |---|---|---|---|---|
-| I | Anomaly detection, regression | PARX (Ardakanian et al. 2014) | synthetic smart meter (Liu) | waiting for the paper's synthetic dataset |
+| I | Anomaly detection, regression | PARX (Ardakanian et al. 2014) | synthetic smart meter (Liu) | not included |
 | II | Anomaly detection, ML | Prophet as configured by Jaiswal et al. 2021 | Ausgrid, 10 customers (Jaiswal) | done |
 | III | Load forecasting, regression | sliding-window (S)ARIMA (Alberg & Last 2018) | UCI household power | done |
 | IV | Load forecasting, ML | RBF SVR (Chen, Chang & Lin 2004) | UCI ElectricityLoadDiagrams | done |
-| V | Price forecasting, regression | ARIMA (Contreras et al. 2003) | electricity price (Kaggle) | waiting for the dataset |
+| V | Price forecasting, regression | ARIMA (Contreras et al. 2003) | electricity price (Kaggle) | not included |
 | VI | Price forecasting, ML | SVRARIMA (Che & Wang 2010) | Polish day-ahead market | done |
 
 **Protocol II** (`iot/p2_prophet_prep.py`, `iot/protocol2.cpp`). Prophet's configuration from the authors' notebook: piecewise-linear trend with 25 changepoints, daily (order 4) and yearly (order 10) seasonality, weekday/weekend weekly seasonality (order 3), Australian holidays, 99% interval; an anomaly is a reading outside the interval or equal to 0. With Gaussian priors the fit is linear in the readings (w = A·y with A public), so each broker fits on its share locally; the squared residuals need the cross term r1·r2, computed with CKKS; the decision runs in a garbled circuit. Every reading goes through DistAEAD first.
@@ -258,7 +258,7 @@ Full pipeline (`drcf_demo`: 3 meters × 168 hours, 504 publications, 432 forecas
 - **CKKS shares are statistically hidden.** Real-valued shares and masks have bounded range, so hiding is statistical: about 8 bits of margin for meter readings (mask 2^20), about 10 bits for model coefficients (mask 2^10), less for large coefficients such as an intercept. The evaluator's reply has no noise flooding. Results are approximate.
 - **Not audited, not constant-time.** Do not use with real keys or data.
 - **Demo harness.** `drcf_demo` gives both broker processes the same seed to generate synthetic data and simulates the publishers and the subscriber inside B1's process; brokers only feed their own shares into the protocols.
-- **Not yet included.** MQTT/Mosquitto integration and Protocols I and V of Table A1 (waiting for their datasets: the synthetic smart meter data of Protocol I and the Kaggle price data of Protocol V).
+- **Not yet included.** MQTT/Mosquitto integration and Protocols I and V of Table A1 (their models are linear predictors, so they can be run on your own data with `drcf.py --model linear`).
 - **Model training.** For Protocols III, IV and VI the model owner trains in the clear on its own historical data and shares the model, as Table A1 assumes; training on shared data is not implemented.
 
 ## Citation
