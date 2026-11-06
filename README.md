@@ -107,6 +107,35 @@ cd build && ../run.sh ./drcf_demo && cd ..
 python3 scripts/make_dashboard.py build/trace.js    # writes docs/index.html
 ```
 
+## Applications (Table A1 of the paper)
+
+Each protocol follows the corresponding row of Table A1 and implements the model as specified in the paper it is based on. Datasets are listed in [data/README.md](data/README.md).
+
+### Protocol II: ML anomaly detection on Ausgrid (Jaiswal et al., AICCC 2021)
+
+`src/protocol2_ausgrid.cpp`, model in `include/prophet_lite.h`.
+
+The model is configured as in the authors' published notebook: Prophet's additive model with a piecewise-linear trend (25 changepoints in the first 80% of the history), daily seasonality (order 4), yearly seasonality (order 10), separate weekday and weekend weekly seasonalities (order 3 each), Australian public holidays, and an anomaly whenever a reading lies outside the interval or equals 0. The fit is a MAP estimate with Prophet's default prior scales; the Laplace prior on changepoint deltas is replaced by a Gaussian with the same scale, which makes the fit linear in the data.
+
+Secure flow (B1, B2 hold additive shares of the readings):
+1. Each broker fits the model to its own share locally (linear, exact): θ_i = G⁻¹Aᵀy_i, ŷ_i = Aθ_i.
+2. The residual variance needs Σ(e₁ + e₂)², obtained with CKKS cross terms.
+3. In a garbled circuit: σ = isqrt(variance), bound = k·σ, and for every reading r = [|y − ŷ| > bound or y = 0]. Outputs stay XOR-shared.
+
+```sh
+./run.sh build/protocol2_ausgrid "Anomaly labelled dataset.csv" all      # k = 3 as in Table A1
+./run.sh build/protocol2_ausgrid "Anomaly labelled dataset.csv" all 2.576   # Prophet's 99% interval
+```
+
+Results on all 10 customers (350,880 half-hourly readings, localhost):
+
+| k | secure = plaintext model | precision vs labels | recall vs labels | G-mean |
+|---|---|---|---|---|
+| 3 (Table A1) | 100% of readings | 0.983 | 0.675 | 0.821 |
+| 2.576 (99% interval, as in Jaiswal et al.) | 99.98–100% (differences only at the boundary, from fixed-point rounding) | 0.929 | 0.879 | 0.937 |
+
+Per customer: about 0.4 s of CKKS, 0.65 s of garbled circuits and 486 MiB of traffic between the brokers. The remaining gap to the published labels comes from their per-customer hyperparameter tuning, Prophet's Laplace changepoint prior and its simulated trend uncertainty, none of which are reproduced here.
+
 ## Protocol notes
 
 **DistAEAD.** ASCON-128 is written as a boolean circuit; public values (IV, nonce, associated data, ciphertext, tag) are folded as constants and cost no gates. One permutation round is 320 AND gates. With a = ⌊|AD|/8⌋+1 associated-data blocks (0 if AD is empty) and m = ⌊|M|/8⌋+1 message blocks, encryption costs (24 + 6a + 6(m − 1))·320 − 256 AND gates; decryption adds 127 for the in-circuit tag comparison. Decryption first opens only the tag bit; plaintext shares are released (as XOR shares) only if it is 1.
@@ -138,7 +167,7 @@ Full pipeline (`drcf_demo`: 3 meters × 168 hours, 504 publications, 432 forecas
 - **CKKS shares are statistically hidden.** Real-valued shares and masks have bounded range, so hiding is statistical: about 8 bits of margin for meter readings (mask 2^20), about 10 bits for model coefficients (mask 2^10), less for large coefficients such as an intercept. The evaluator's reply has no noise flooding. Results are approximate.
 - **Not audited, not constant-time.** Do not use with real keys or data.
 - **Demo harness.** `drcf_demo` gives both broker processes the same seed to generate synthetic data and simulates the publishers and the subscriber inside B1's process; brokers only feed their own shares into the protocols.
-- **Not yet included.** MQTT/Mosquitto integration, dataset loaders, and the six analytics protocols of the paper (Table A1).
+- **Not yet included.** MQTT/Mosquitto integration and Protocols I, III, IV, V and VI of Table A1 (Protocol II is included).
 
 ## Citation
 
