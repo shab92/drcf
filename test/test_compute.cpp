@@ -23,14 +23,14 @@ int main(int argc, char** argv) {
     for (auto& v : x) v = (int32_t)(g() % 4001);             // e.g. Wh readings 0..4000
     for (auto& v : beta) v = ub(g);                          // real coefficients
     std::vector<uint32_t> xs(n); std::vector<double> bs(n);
-    std::uniform_real_distribution<double> mb(-64.0, 64.0);  // beta shares
+    std::uniform_real_distribution<double> mb(-1024.0, 1024.0);  // beta shares (2^10)
     for (size_t i = 0; i < n; i++) {
         uint32_t m = (uint32_t)g(); xs[i] = p1 ? m : (uint32_t)x[i] ^ m;
         double r = mb(g); bs[i] = p1 ? r : beta[i] - r;
     }
     int bad = 0;
     auto t0 = clk::now(); uint64_t c0 = io->send_counter + io->recv_counter;
-    auto xa = convert::b2a(s, xs, 16);
+    auto xa = convert::b2a(s, xs, 20);
     double tb = ms(t0); uint64_t cb = io->send_counter + io->recv_counter - c0;
     std::vector<double> xd(xa.begin(), xa.end());
     he::Params P;
@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
                G - bad, G, maxerr, near);
     }
     if (p1)
-        printf("  CKKS N=%zu, coeff {60,36,60}, scale 2^36, fresh keys %.1f ms\n  B2A: %.1f ms, %.0f KiB\n  CKKS cross terms: %.1f ms, %.0f KiB; ciphertext out %zu B for %zu B plaintext (%.1fx)\n  A2B: %.1f ms, %.0f KiB\n",
-               P.N, hs.keygen_ms, tb, cb / 1024.0, th, ch / 1024.0, hs.ct_bytes_out, hs.plain_bytes, (double)hs.ct_bytes_out / hs.plain_bytes, ta, ca / 1024.0);
+        printf("  CKKS N=%zu, coeff {40,40,40,40,40}, scale 2^40, symmetric + zstd, fresh keys %.1f ms\n  B2A: %.1f ms, %.0f KiB\n  CKKS cross terms: %.1f ms, %.0f KiB; fresh ciphertext %zu B for %zu slots (%.2fx of %zu B plaintext at full packing)\n  A2B: %.1f ms, %.0f KiB\n",
+               P.N, hs.keygen_ms, tb, cb / 1024.0, th, ch / 1024.0, hs.fresh_ct_bytes, hs.slots, (double)hs.fresh_ct_bytes / (hs.slots * 8.0), hs.slots * 8, ta, ca / 1024.0);
     return bad;
 }

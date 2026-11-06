@@ -29,7 +29,7 @@ Needs EMP-toolkit (emp-tool, emp-ot, emp-sh2pc; current master, C++20 `SH2PCSess
 ## CKKS joint evaluation (Sec. 4.1.3)
 `include/he.h` follows the paper: real-valued shares X = X1 + X2 and β = β1 + β2. For each joint evaluation every broker generates fresh CKKS keys, encrypts its own share, and the brokers exchange encrypted cross terms (C(1)·β2 + δ, C(2)·β1 + δ′). Each broker outputs Y(i) = Dec(sk_i, C_T) + δ_i; the keys are erased afterwards. For thresholds, each broker rounds Y(i) to fixed point and the brokers continue in a garbled circuit.
 
-Parameters: N = 8192, coeff modulus {60, 36, 60}, scale 2^36 (128-bit security per SEAL's tables). Values must stay below q0 / (2·scale) = 2^23; the masks (δ up to 2^20, reading shares up to 2^16, β shares up to 64) keep inside that: 64·2^16 + 2^20 < 2^23. Measured error: at most 1e-3 on 400 inner products (test_compute) and 9e-4 Wh on the subscriber's result (drcf_demo), which is the mWh rounding before the GC.
+Parameters: N = 8192, coeff modulus {40, 40, 40, 40, 40} (200 bits, inside SEAL's 128-bit table), scale 2^40, one rescale after the plaintext multiplication. Each broker encrypts its own share under its own secret key (SEAL seeded symmetric encryption) and ciphertexts are serialised with zstd. This reproduces Table 6 of the paper: a fresh ciphertext holding 4096 values is 6.02-6.03x the size of the plaintext (as 8-byte doubles); the paper reports 6.02-6.09x. The settings were chosen by matching that expansion, since the original code is not available; they also give large headroom (about 2^79 after rescale), so masks can be big: δ up to 2^30, reading shares up to 2^20, β shares up to 2^10. Measured error: under 1e-5 on the cross terms themselves; end to end it is the mWh rounding before the GC (about 1e-3).
 
 ## Threshold ECDSA (DKLs23)
 `include/dkls23.h` follows Protocol 3.4 of "Threshold ECDSA in Three Rounds" (Doerner, Kondi, Lee, shelat, IEEE S&P 2024) for two parties:
@@ -48,7 +48,7 @@ for r in emp-tool emp-ot emp-sh2pc; do
 done
 # SEAL (once)
 git clone --branch v4.1.2 https://github.com/microsoft/SEAL.git
-cmake -S SEAL -B SEAL/build -DCMAKE_INSTALL_PREFIX=$HOME/seal -DSEAL_USE_MSGSL=OFF -DSEAL_USE_ZLIB=OFF -DSEAL_USE_ZSTD=OFF
+cmake -S SEAL -B SEAL/build -DCMAKE_INSTALL_PREFIX=$HOME/seal -DSEAL_USE_MSGSL=OFF -DSEAL_USE_ZLIB=ON -DSEAL_USE_ZSTD=ON   # zstd is needed for Table 6 sizes
 cmake --build SEAL/build -j && cmake --install SEAL/build
 # this project
 cmake -S . -B build -DCMAKE_PREFIX_PATH="$HOME/emp;$HOME/seal" && cmake --build build -j
@@ -82,11 +82,11 @@ Check: 8-byte message, 5-byte AD: (24 + 6 + 6)·320 − 256 = 11,264.
 
 ## Full pipeline (drcf_demo, 3 meters × 168 h, localhost)
 504 publications, 432 forecasts, 1 subscriber request. About 1 s end to end, 195 MiB between the brokers, 6.3 M AND gates.
-DistAEAD.Dec is 84% of the time. CKKS cross terms for all 432 forecasts: 36 ms including fresh key generation (12 ms). DKLs23 ECDSA: about 13 ms and 135 KiB per signature after setup. 2-party Schnorr: 0.5 ms.
+DistAEAD.Dec is 84% of the time. CKKS cross terms for all 432 forecasts: about 70 ms including fresh key generation (about 20 ms). DKLs23 ECDSA: about 13 ms and 135 KiB per signature after setup. 2-party Schnorr: 0.5 ms.
 
 ## Caveats
 - Semi-honest (as in the paper). Not audited. Not constant-time. Localhost numbers have no network latency.
-- CKKS: shares and masks are real numbers with bounded range, so hiding is statistical and limited by CKKS headroom: about 4 bits of margin for readings (mask 2^16 vs readings up to about 3,000 Wh) and about 6 to 8 bits for the AR coefficients (mask 64), but under 1 bit for the intercept (45.6). Larger N or a bigger q0 buys more margin. The evaluator's reply has no noise flooding, so a key owner who inspects CKKS noise could learn a little about the other's β share. Results are approximate (see above).
+- CKKS: shares and masks are real numbers with bounded range, so hiding is statistical: about 8 bits of margin for readings (mask 2^20 vs readings up to about 3,000 Wh), about 10 bits for the AR coefficients (mask 2^10) and about 4 bits for the intercept (45.6). The evaluator's reply has no noise flooding, so a key owner who inspects CKKS noise could learn a little about the other's β share. Results are approximate (see above).
 - ECDSA: the DKLs23 consistency checks are implemented; the VOLE is OT-based but is not the paper's exact two-round VOLE (full version).
 - The paper's Sec. 4.1.4 describes a Schnorr-style threshold signature while Sec. 5 implements threshold ECDSA (DKLs23). Both are here.
 - drcf_demo's harness gives both processes the same seed (synthetic data) and simulates publishers and the subscriber inside B1's process. Brokers only feed their own shares into the protocols.
