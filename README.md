@@ -1,4 +1,6 @@
-# DRCF: two-broker privacy-preserving publish-subscribe in C++
+# DRCF: A Privacy-Enhanced Distributed Publish-Subscribe System for Secure Data Computation in Untrusted Environments
+
+*Two-broker privacy-preserving publish-subscribe, reference implementation in C++.*
 
 Reference implementation of **DRCF**, a publish-subscribe system in which the broker role is split between two non-colluding brokers, B1 and B2. Publishers' data, keys, intermediate results and the subscriber's result are only ever held as shares; neither broker alone learns anything about them.
 
