@@ -13,7 +13,7 @@ K = K1 ^ K2 and the plaintext never exist in either broker.
 | DistAEAD.Enc / Dec | `include/distaead.h`, `include/ascon_circuit.h` | ASCON-128 inside a Yao GC (EMP sh2pc, half-gates) |
 | XOR ↔ additive shares, thresholds | `include/convert.h` | GC (EMP `UInt_T`), arithmetic mod the BFV plaintext modulus t |
 | Linear models (AR / regression) | `include/he.h` | SEAL BFV, own keys per broker, masked cross terms β₂x₁, β₁x₂ |
-| TS.KeyGen / TS.Sign | `include/tsig.h` | 2-party ECDSA (multiplicative shares, Gilboa OT-MtA on EMP IKNP) and 2-party Schnorr, P-256 |
+| TS.KeyGen / TS.Sign | `include/dkls23.h`, `include/tsig.h` | Threshold ECDSA per Doerner, Kondi, Lee, shelat (S&P 2024) Protocol 3.4 with n = t = 2, and 2-party Schnorr, secp256k1 |
 | Full pipeline | `src/drcf_demo.cpp` | Publish → Compute → Subscribe, writes `trace.js` for the dashboard |
 
 ## Files
@@ -25,6 +25,15 @@ K = K1 ^ K2 and the plaintext never exist in either broker.
 
 ## Build
 Needs EMP-toolkit (emp-tool, emp-ot, emp-sh2pc; current master, C++20 `SH2PCSession` API), Microsoft SEAL 4.1 and OpenSSL 3.
+
+## Threshold ECDSA (DKLs23)
+`include/dkls23.h` follows Protocol 3.4 of "Threshold ECDSA in Three Rounds" (Doerner, Kondi, Lee, shelat, IEEE S&P 2024) for two parties:
+- Setup: commit-release key generation (FRelaxedKeyGen for n = t = 2), additive shares sk = sk1 + sk2, FZero PRF key.
+- Round 1: instance key r_i, inversion mask φ_i, commitment to R_i, RVOLE instance toward the other party.
+- Round 2: sk_i rerandomised with the FZero mask, RVOLE multiplication of {r_i, sk_i}, check-adjust message (Γu, Γv, ψ, pk_i), decommit R_i.
+- Round 3: consistency checks χ·R_j − Γu = du·G and χ·pk_j − Γv = dv·G, Σpk = pk, then u_i, v_i, w_i; s = Σw / Σu, output only if ECDSA verification passes.
+
+Realisation choices: FCom is a salted SHA-256 commitment. FRVOLE(q, 2) is built from EMP's SoftSpokenOT (malicious-secure OT extension) with Bob's randomised gadget encoding of χ (length κ + 2λs = 416). The paper's own optimised two-round VOLE is in its full version and is not reproduced. The test (`test_dkls23`) also checks that a party committing to a wrong R_i, or sending a wrong pk_i, is caught by the step-8 checks.
 ```
 # EMP (once)
 for r in emp-tool emp-ot emp-sh2pc; do
@@ -45,7 +54,8 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH="$HOME/emp;$HOME/seal" && cmake --build 
 ./build/test_ref                     # 61/61 vs KAT
 ./run.sh build/test_distaead         # B1 + B2: publisher -> dist_dec -> dist_enc -> subscriber, tamper check
 ./run.sh build/bench 10              # cost table
-./run.sh build/test_tsig             # 2-party ECDSA + Schnorr, verified with OpenSSL
+./run.sh build/test_dkls23           # DKLs23 threshold ECDSA: honest runs + two cheating parties caught
+./run.sh build/test_tsig             # 2-party Schnorr
 ./run.sh build/test_compute          # B2A, HE cross terms, A2B, threshold
 cd build && ../run.sh ./drcf_demo    # whole DRCF pipeline, writes trace.js
 ```
@@ -67,11 +77,11 @@ Check: 8-byte message, 5-byte AD: (24 + 6 + 6)·320 − 256 = 11,264.
 
 ## Full pipeline (drcf_demo, 3 meters × 168 h, localhost)
 504 publications, 432 forecasts, 1 subscriber request. About 1 s end to end, 195 MiB between the brokers, 6.3 M AND gates.
-DistAEAD.Dec is 84% of the time. HE cross terms for all 432 forecasts: 28 ms. 2-party ECDSA: 27 ms. 2-party Schnorr: 0.3 ms.
+DistAEAD.Dec is 84% of the time. HE cross terms for all 432 forecasts: 28 ms. DKLs23 ECDSA: about 13 ms and 135 KiB per signature after setup. 2-party Schnorr: 0.5 ms.
 
 ## Caveats
 - Semi-honest (as in the paper). Not audited. Not constant-time. Localhost numbers have no network latency.
 - HE: the helper's reply is masked with fresh ρ, but there's no noise flooding. For circuit privacy against a key owner who inspects noise, add flooding or switch to a scheme with circuit privacy.
-- ECDSA: semi-honest MtA. Malicious security needs the DKLs checks (Doerner et al.) or Paillier proofs.
-- The paper's Sec. 4.1.4 describes a Schnorr-style threshold signature while Sec. 5 implements threshold ECDSA. Both are here.
+- ECDSA: the DKLs23 consistency checks are implemented; the VOLE is OT-based but is not the paper's exact two-round VOLE (full version).
+- The paper's Sec. 4.1.4 describes a Schnorr-style threshold signature while Sec. 5 implements threshold ECDSA (DKLs23). Both are here.
 - drcf_demo's harness gives both processes the same seed (synthetic data) and simulates publishers and the subscriber inside B1's process. Brokers only feed their own shares into the protocols.
