@@ -71,8 +71,8 @@ Each protocol of the paper's Table A1 is implemented with the model from the pap
 |---|---|---|---|---|
 | I | Anomaly detection, regression | PARX (Ardakanian et al. 2014) | synthetic smart meter (Liu) | waiting for the paper's synthetic dataset |
 | II | Anomaly detection, ML | Prophet as configured by Jaiswal et al. 2021 | Ausgrid, 10 customers (Jaiswal) | done |
-| III | Load forecasting, regression | sliding-window (S)ARIMA (Alberg & Last 2018) | UCI household power | in progress |
-| IV | Load forecasting, ML | RBF SVR (Chen, Chang & Lin 2004) | UCI ElectricityLoadDiagrams | in progress |
+| III | Load forecasting, regression | sliding-window (S)ARIMA (Alberg & Last 2018) | UCI household power | done |
+| IV | Load forecasting, ML | RBF SVR (Chen, Chang & Lin 2004) | UCI ElectricityLoadDiagrams | done |
 | V | Price forecasting, regression | ARIMA (Contreras et al. 2003) | electricity price (Kaggle) | waiting for the dataset |
 | VI | Price forecasting, ML | SVRARIMA (Che & Wang 2010) | Polish day-ahead market | done |
 
@@ -101,6 +101,51 @@ Results (35,088 half-hourly readings per customer, two years):
 The remaining gap to the paper's labels comes from Prophet's per-customer tuned hyperparameters, which were not published (defaults are used here), and from replacing Prophet's Laplace changepoint prior by a Gaussian. Without DistAEAD the protocol takes about 6 s per customer; CKKS error on r² is about 0.002 Wh².
 
 Interval width: the code uses Prophet's 99% interval (z = 2.576, `Z` in `iot/p2_prophet_prep.py`), as Jaiswal et al. did. Table A1 of the DRCF paper writes the bound as 3σ; with z = 3 the protocol flags fewer readings and recall against the published labels drops to about 0.68 (precision about 0.98).
+
+**Protocol III** (Alberg & Last, 2018, on the UCI household data).
+
+`scripts/train_protocol3.py` (model owner), secure part in the generic engine `src/drcf_secure.cpp` (`ROWS` jobs).
+
+SWHSA, the paper's best hourly algorithm: SARIMA(0,0,1)(0,1,1)₂₄ (their 9.19% model), training window 96 days (2304 h), validation window 24 h, the window slides by 24 h, and the model is re-induced when MAPE_val / MAPE_tr > Th. The paper does not give Th; the default is 1 (a parameter of the script). The data is the hourly mean of Global_active_power.
+
+Secure flow: the owner fits each window in the clear and writes the 24 forecasts of the next day as linear predictors in past readings (AR(∞) form of the SARIMA, 2304 lags, recursion for hours 2–24 folded into the weights). The brokers evaluate them on the shared readings with CKKS cross terms; the coefficients stay secret-shared.
+
+```sh
+python3 examples/prepare_uci_household.py household_power_consumption.txt > build/uci_hourly.csv
+python3 scripts/train_protocol3.py build/uci_hourly.csv build/job_p3.txt build/reference_p3.txt 365
+cd build && ../run.sh ./drcf_secure job_p3.txt result_p3.txt
+```
+
+Results, last 365 days of the data (8,760 hourly forecasts, 194 refits):
+
+| | MAPE |
+|---|---|
+| secure | 63.26% |
+| plaintext linear predictor | 63.26% (max difference 0.008 kW) |
+| statsmodels SARIMA forecast | 64.68% |
+| naive hourly baseline, y(t−24) | 68.74% |
+
+Cost: 92 s and 4.1 GB of localhost traffic for the year (CKKS only, no garbled circuit). The truncated predictor matches statsmodels to 0.002 kW in the median; in about 7% of the hours it differs by more than 0.1 kW, in windows where the fitted seasonal MA term is close to −1 and 2304 lags are not enough. The MAPE is much higher than the paper's because this is one household (spiky, low night load) and theirs were six district meters; the gain over the naive baseline is similar. CKKS mask is 2^34 here (job tag `MASK`) at scale 10⁴: the products being hidden are below 2^21, and a 2^40 mask over 1758-term sums costs about 0.3 kW of precision.
+
+**Protocol IV** (Chen, Chang & Lin, 2004, on ElectricityLoadDiagrams).
+
+`scripts/train_protocol4.py` (model owner), `src/protocol4_eld.cpp` (brokers).
+
+The EUNITE 2001 winning model, on the system load (sum of the 321 clients of the hourly Lai et al. version): daily maximum load, 31-day recursive forecast; 14 attributes = maxima of the previous 7 days scaled to [0, 1], six weekday bits (Sunday all zero), one holiday bit; no temperature; winter months only (Jan–Mar, Oct–Dec); RBF ε-SVR with ε = 0.1 (LIBSVM default); C and γ chosen by recursive prediction of a January validation month (January 2013); holiday flags removed in the forecast month, as the paper did. Test month: January 2014.
+
+Secure flow: every client sends shares of its hourly readings for the 7 days before the month; each broker adds its shares (system load); the garbled circuit takes the daily maxima, scales them, and runs the 31 SVR steps, each prediction feeding the next, with support vectors, α, b, min and range secret. Calendar bits are public.
+
+```sh
+python3 scripts/train_protocol4.py electricity.txt.gz build/model_p4.txt
+cd build && ../run.sh ./protocol4_eld model_p4.txt
+```
+
+| | MAPE, January 2014 |
+|---|---|
+| secure | 5.85% |
+| plaintext reference | 5.98% |
+
+23 support vectors (C = 1, γ = 0.5). Cost: 1.1 s, 18 M AND gates, 558 MiB. Fixed-point error grows through the recursion and stays below 0.26% of the forecast. The paper reports 1.95% on the EUNITE data (one regional utility); here the target is the sum of 321 Portuguese clients.
 
 **Protocol VI** (Che & Wang, 2010, on the Polish day-ahead market).
 
@@ -214,7 +259,7 @@ Full pipeline (`drcf_demo`: 3 meters × 168 hours, 504 publications, 432 forecas
 - **Not audited, not constant-time.** Do not use with real keys or data.
 - **Demo harness.** `drcf_demo` gives both broker processes the same seed to generate synthetic data and simulates the publishers and the subscriber inside B1's process; brokers only feed their own shares into the protocols.
 - **Not yet included.** MQTT/Mosquitto integration and Protocols I, III, IV and V of Table A1 (Protocols II and VI are included).
-- **Model training.** For Protocol VI the model owner trains in the clear on its own historical data and shares the model, as Table A1 assumes; training on shared data is not implemented.
+- **Model training.** For Protocols III, IV and VI the model owner trains in the clear on its own historical data and shares the model, as Table A1 assumes; training on shared data is not implemented.
 
 ## Citation
 

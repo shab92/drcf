@@ -32,7 +32,7 @@ struct Job {
     std::vector<double> y;
     long start = 0, count = 0;
     std::vector<int> lags; std::vector<double> coef;              // linear
-    int rowk = 0; std::vector<int> rowlag; std::vector<double> rowcoef, rowc;   // linear, one row per test point
+    int maskbits = 40; int rowk = 0; std::vector<int> rowlag; std::vector<double> rowcoef, rowc;   // linear, one row per test point
     int npub = 0; std::vector<double> pubrows, pubcoef;
     double thresh = 0;                                            // anomaly (absolute, value units)
     std::vector<prophet_lite::Stamp> stamps; double k = 3; bool zero_rule = false, au = false; double yscale = 0;   // prophet
@@ -60,6 +60,7 @@ static Job load(const std::string& path) {
         }
         else if (tag == "STAMPS") { long n; f >> n; j.stamps.resize(n); for (auto& s : j.stamps) f >> s.y >> s.mo >> s.d >> s.h >> s.mi >> s.dow; }
         else if (tag == "PROPHET") { int z, a; f >> j.k >> z >> a >> j.yscale; j.zero_rule = z; j.au = a; }
+        else if (tag == "MASK") f >> j.maskbits;   // CKKS mask |delta| = 2^bits: hiding vs precision
         else if (tag == "NORM") f >> j.lo >> j.hi;
         else if (tag == "SVR") { int n; f >> j.gamma >> j.b >> n; j.alpha.resize(n); j.sv.assign(n, std::vector<double>(j.lags.size())); for (int i = 0; i < n; i++) { f >> j.alpha[i]; for (auto& v : j.sv[i]) f >> v; } }
         else if (tag == "ARIMA") { f >> j.L >> j.cp; j.w.resize(j.L); for (auto& v : j.w) f >> v; }
@@ -88,7 +89,7 @@ int main(int argc, char** argv) {
     std::vector<int64_t> out_i;     // forecasts (x scale) or flags, this broker's additive/XOR share
     std::vector<int> ref_flags;      // prophet only: plaintext reference computed by B1 from the harness copy of the series
     bool out_xor = false;
-    he::Params hp; hp.mask_range = std::pow(2.0, 40);
+    he::Params hp; hp.mask_range = std::pow(2.0, J.maskbits);
 
     // shared helper: anomaly decision in GC given additive int shares of y and y_hat (x scale)
     auto decide = [&](const std::vector<int64_t>& ys, const std::vector<int64_t>& yh, int64_t tau_share) {
