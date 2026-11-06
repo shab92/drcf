@@ -4,6 +4,7 @@
 // (max error 3.5e-6 with Q14 coefficients, below the Q14 step), then an arithmetic shift right by k.
 // Data, support vectors, alpha and b are all secret (shared) inputs; gamma is a public hyperparameter.
 #pragma once
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -64,21 +65,21 @@ inline I32 exp2neg(const I64& yq28) {
 }
 
 struct Model {        // secret model, held as GC wires after input
-    std::vector<std::array<I32, 3>> sv;
+    std::vector<std::vector<I32>> sv;   // nsv x m
     std::vector<I32> alpha;
     I32 b;
     uint64_t gc;      // public: round(gamma * log2(e) * 2^32)
 };
 
-// x: three normalised inputs (Q14), clamped by the caller to [-7, 7]. Differences are squared at Q12 so that
-// |d| <= 8 gives d^2 <= 2^30 and the sum of three stays below 2^32.
-inline I32 eval(const Model& M, const std::array<I32, 3>& x) {
+// x: m normalised inputs (Q14), clamped by the caller to [-7, 7]. Differences are squared at Q12 so that
+// |d| <= 8 gives d^2 <= 2^30; squares are summed in 64 bits.
+inline I32 eval(const Model& M, const std::vector<I32>& x) {
     auto& c = *x[0].context();
     I32 acc = M.b;
     U64 G = U64::constant(c, M.gc);
     for (size_t k = 0; k < M.sv.size(); k++) {
         U64 d2 = U64::constant(c, 0);
-        for (int m = 0; m < 3; m++) { I32 d = (x[m] - M.sv[k][m]) >> 2; d2 = d2 + (d * d).as_unsigned().template zext<64>(); }   // Q24, < 2^32
+        for (size_t m = 0; m < x.size(); m++) { I32 d = (x[m] - M.sv[k][m]) >> 2; d2 = d2 + (d * d).as_unsigned().template zext<64>(); }   // Q24
         I64 y = to_i64((d2 * G) >> 28);                                   // gamma log2e ||x - sv||^2, Q28
         acc = acc + ((M.alpha[k] * exp2neg(y)) >> FRAC);
     }

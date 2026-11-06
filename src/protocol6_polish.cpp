@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
         auto xv = input_shared(s, x_in);
         auto& c = s.ctx();
         svr_gc::Model SM; SM.gc = (uint64_t)std::llround(M.gamma * std::log2(std::exp(1.0)) * 4294967296.0);
-        for (int k = 0; k < nsv; k++) SM.sv.push_back({low32(mv[3 * k]), low32(mv[3 * k + 1]), low32(mv[3 * k + 2])});
+        for (int k = 0; k < nsv; k++) SM.sv.push_back(std::vector<I32>{low32(mv[3 * k]), low32(mv[3 * k + 1]), low32(mv[3 * k + 2])});
         for (int k = 0; k < nsv; k++) SM.alpha.push_back(low32(mv[3 * nsv + k]));
         SM.b = low32(mv[4 * nsv]);
         I64 LO = mv[4 * nsv + 1], RG = mv[4 * nsv + 2];
@@ -97,7 +97,7 @@ int main(int argc, char** argv) {
         std::vector<I32> Nt; std::vector<I64> et;
         for (int h = 0; h < H; h++) {
             int i = h + 3;                                         // index of hour t0+h in xn
-            I32 n = eval(SM, {xn[i - 1], xn[i - 2], xn[i - 3]});
+            I32 n = eval(SM, std::vector<I32>{xn[i - 1], xn[i - 2], xn[i - 3]});
             Nt.push_back(n); et.push_back(sext64(xn[i] - n));
         }
         auto e_sh = to_additive(s, et, 28);

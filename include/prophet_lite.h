@@ -29,8 +29,9 @@ struct Config {
     int n_changepoints = 25; double changepoint_range = 0.8;
     int daily_order = 4, yearly_order = 10, weekly_cond_order = 3;
     double prior_trend = 5.0, prior_cp = 0.05, prior_season = 10.0, prior_holiday = 10.0;
-    double y_scale = 2000.0;   // public scale (Wh) standing in for Prophet's max|y|, which would depend on the data
+    double y_scale = 2000.0;   // public scale standing in for Prophet's max|y|, which would depend on the data
     double noise_var = 0.01;   // observation variance in scaled units for the MAP ridge weights
+    bool au_holidays = true;   // Australian national holidays (Jaiswal et al.); off for other datasets
 };
 
 struct Model {
@@ -47,7 +48,7 @@ struct Model {
         std::vector<double> cps;
         size_t last = (size_t)std::floor(cfg.changepoint_range * N);
         for (int j = 1; j <= cfg.n_changepoints; j++) cps.push_back((days[(size_t)std::llround((double)j * last / (cfg.n_changepoints + 1))] - t0) / (t1 - t0));
-        int H = (int)au_holidays::names.size();
+        int H = cfg.au_holidays ? (int)au_holidays::names.size() : 0;
         P = 2 + cfg.n_changepoints + 2 * cfg.daily_order + 2 * cfg.yearly_order + 4 * cfg.weekly_cond_order + H;
         A.assign(N * (size_t)P, 0.0); lambda.assign(P, 0.0);
         const double tw = 2 * M_PI;
@@ -64,8 +65,9 @@ struct Model {
                     double on = (cond == 0) == we ? 1.0 : 0.0;
                     r[c++] = on * std::cos(tw * n * days[i] / 7.0); r[c++] = on * std::sin(tw * n * days[i] / 7.0);
                 }
-            for (auto& hd : au_holidays::days)
-                if (hd.y == ts[i].y && hd.m == ts[i].mo && hd.d == ts[i].d) r[c + hd.name] = 1.0;
+            if (cfg.au_holidays)
+                for (auto& hd : au_holidays::days)
+                    if (hd.y == ts[i].y && hd.m == ts[i].mo && hd.d == ts[i].d) r[c + hd.name] = 1.0;
         }
         // ridge weights = noise variance / prior variance, per parameter group
         int c = 0;

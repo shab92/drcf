@@ -107,6 +107,46 @@ cd build && ../run.sh ./drcf_demo && cd ..
 python3 scripts/make_dashboard.py build/trace.js    # writes docs/index.html
 ```
 
+## Try it on your own data
+
+`drcf.py` lets you run DRCF on any time series and decide which model suits it. It plays the model owner (trains in the clear on a training window), runs the real two-broker computation on secret-shared data with `build/drcf_secure`, and reports accuracy, how closely the secure result matches the plaintext model, and the cost.
+
+Input: a CSV with a time column and a value column (optionally a series id column, public covariates such as temperature, and a 0/1 anomaly label column for scoring). The last `--test` points are evaluated.
+
+```sh
+pip install pandas numpy scikit-learn statsmodels   # front end only
+
+# forecasting with a linear model on lags plus public features
+python3 drcf.py --data load.csv --time timestamp --value kwh --task forecast --model linear \
+                --lags 1,2,24,168 --public intercept,hour,weekday --exog temperature
+
+# anomaly detection, Prophet-style model (Protocol II), scored against labels
+python3 drcf.py --data meter.csv --time ts --value kwh --label anomaly --task anomaly --model prophet --k 3
+
+# RBF SVR with ARIMA on its residuals (Protocol VI)
+python3 drcf.py --data prices.csv --time date --value price --task forecast --model svr \
+                --lags 1,2,3 --svr-C 1 --svr-delta 20 --svr-epsilon 0.001 --arima 24,0,1 --train 168
+```
+
+| `--model` | what it computes | secure realisation | covers |
+|---|---|---|---|
+| `linear` | ŷ = Σ βⱼ·y(t − lagⱼ) + public features (intercept, hour, weekday, `--exog` columns) | CKKS cross terms for secret lags × shared β | AR, ARIMA predictors, regression, PARX with weather columns (Protocols I, III, V) |
+| `prophet` | trend + daily, yearly, weekday and weekend seasonality; anomaly if \|y − ŷ\| > k·σ (`--zero-rule` adds y = 0) | fit on each broker's share, σ via CKKS, decision in a GC | Protocol II |
+| `svr` | RBF SVR on min-max normalised lags, optional `--arima p,d,q` on its residuals | exact kernel in a GC, ARIMA via CKKS | Protocols IV, VI |
+
+Tasks: `forecast` (one step ahead for every test point) or `anomaly` (flag test points; for `linear` and `svr` the threshold is k times the training-residual standard deviation). Run `python3 drcf.py --help` for every option. `examples/prepare_ausgrid.py` and `examples/prepare_polish.py` turn the two public datasets into the CSV format above.
+
+Example runs (localhost):
+
+| data | task, model | accuracy (secure / plaintext) | secure = plaintext | cost |
+|---|---|---|---|---|
+| Polish prices, last week to 2019-03-04 | forecast, `linear` lags 1,2,24,168 + hour, weekday, demand, wind | MAPE 2.918% / 2.918% | max diff 0.01 PLN | 0.04 s, 0.9 MiB |
+| same week | forecast, `svr` lags 1–3 + ARIMA(24,0,1) | MAPE 5.91% / 5.93% | max diff 0.24 PLN | 14 s, 364 M AND gates |
+| Ausgrid customer 7, 35,088 points | anomaly, `prophet` k = 2.576, zero rule | F1 0.961 vs Jaiswal et al. labels | 99.99% of flags | 1.2 s, 487 MiB |
+| Ausgrid customer 7, last 17,520 points | anomaly, `linear` lags 1,2,48,336 + hour, weekday | F1 0.507 vs labels | 99.99% of flags | 1.1 s, 254 MiB |
+
+Cost guide: `linear` and `prophet` take seconds for tens of thousands of points. `svr` costs about 2,100 AND gates per test point × support vector, so keep that product around 30,000 or below.
+
 ## Applications (Table A1 of the paper)
 
 Each protocol follows the corresponding row of Table A1 and implements the model as specified in the paper it is based on. Datasets are listed in [data/README.md](data/README.md).
