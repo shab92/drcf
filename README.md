@@ -258,7 +258,7 @@ Full pipeline (`drcf_demo`: 3 meters × 168 hours, 504 publications, 432 forecas
 - **CKKS shares are statistically hidden.** Real-valued shares and masks have bounded range, so hiding is statistical: about 8 bits of margin for meter readings (mask 2^20), about 10 bits for model coefficients (mask 2^10), less for large coefficients such as an intercept. The evaluator's reply has no noise flooding. Results are approximate.
 - **Not audited, not constant-time.** Do not use with real keys or data.
 - **Demo harness.** `drcf_demo` gives both broker processes the same seed to generate synthetic data and simulates the publishers and the subscriber inside B1's process; brokers only feed their own shares into the protocols.
-- **Not yet included.** MQTT/Mosquitto integration and Protocols I, III, IV and V of Table A1 (Protocols II and VI are included).
+- **Not yet included.** MQTT/Mosquitto integration and Protocols I and V of Table A1 (they need datasets that are not public: the synthetic data of Protocol I and the Kaggle price data of Protocol V).
 - **Model training.** For Protocols III, IV and VI the model owner trains in the clear on its own historical data and shares the model, as Table A1 assumes; training on shared data is not implemented.
 
 ## Citation
