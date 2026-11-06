@@ -22,6 +22,7 @@ Reference implementation of **DRCF**, a publish-subscribe system in which the br
 | Subscribe: TS.Sign | `include/dkls23.h` | 2-party threshold ECDSA on secp256k1 following Doerner, Kondi, Lee, shelat, *Threshold ECDSA in Three Rounds*, IEEE S&P 2024 (Protocol 3.4, n = t = 2). |
 | Alternative signature | `include/tsig.h` | 2-party Schnorr on secp256k1. |
 | End to end | `src/drcf_demo.cpp` | Publish → Compute → Subscribe on synthetic smart-meter data (load forecasting and anomaly alerts). Writes `trace.js` for the dashboard. |
+| Table A1 protocols on your data | `drcf.py`, `drcf_models.py`, `src/drcf_secure.cpp`, `src/protocol4_daily.cpp`, `include/svr_gc.h`, `include/prophet_lite.h` | Model owner in Python (paper model, fitted in the clear); the two brokers in C++ on secret-shared data. |
 | Dashboard | `docs/index.html`, `scripts/make_dashboard.py` | Self-contained page that replays a recorded run: protocol flow, what each broker sees, forecasts and alerts, costs. |
 
 ## Build
@@ -65,18 +66,54 @@ On two machines, set `EMP_PEER_IP` and `EMP_PORT`, then start party 1 and party 
 
 ## IoT protocols (Table A1)
 
-Each protocol of the paper's Table A1 is implemented with the model from the paper it cites, on the same dataset (paper Table 3). A Python script builds the plaintext model and the public inputs; a C++ program runs the protocol between the two brokers and checks the result.
+Every protocol of the paper's Table A1 runs on your own data with one command. Give a CSV with a time column and a value column; `drcf.py` uses the model and settings of the paper Table A1 cites, plays the model owner (fits in the clear), runs the two brokers on secret-shared data, and reports accuracy, how closely the secure result matches the plaintext model, and the cost. Every paper setting can be overridden (`python3 drcf.py --help`).
 
-| Protocol | Task | Model (paper) | Dataset | Status |
+```sh
+pip install pandas numpy scipy scikit-learn statsmodels holidays   # front end only
+python3 drcf.py --protocol 1 --data meter.csv --time ts --value kwh --temp temperature --holidays CA
+python3 drcf.py --protocol 2 --data meter.csv --time ts --value kwh --label anomaly
+python3 drcf.py --protocol 3 --data load.csv  --time ts --value kw --test 720
+python3 drcf.py --protocol 4 --data load.csv  --time ts --value kw --series client --holidays PT
+python3 drcf.py --protocol 5 --data price.csv --time ts --value price
+python3 drcf.py --protocol 6 --data price.csv --time ts --value price
+```
+
+| | Task | Model (cited paper) | Paper settings used | Secure realisation |
 |---|---|---|---|---|
-| I | Anomaly detection, regression | PARX (Ardakanian et al. 2014) | synthetic smart meter (Liu) | not included |
-| II | Anomaly detection, ML | Prophet as configured by Jaiswal et al. 2021 | Ausgrid, 10 customers (Jaiswal) | done |
-| III | Load forecasting, regression | sliding-window (S)ARIMA (Alberg & Last 2018) | UCI household power | done |
-| IV | Load forecasting, ML | RBF SVR (Chen, Chang & Lin 2004) | UCI ElectricityLoadDiagrams | done |
-| V | Price forecasting, regression | ARIMA (Contreras et al. 2003) | electricity price (Kaggle) | not included |
-| VI | Price forecasting, ML | SVRARIMA (Che & Wang 2010) | Polish day-ahead market | done |
+| I | anomaly detection | PARX (Ardakanian et al. 2014) | one OLS model per hour × (weekday, weekend/holiday); lags = same hour on the previous 3 days of that type; temperature terms (T−20)⁺, (16−T)⁺, (5−T)⁺; flag if \|y − ŷ\| > 3σ of the season | CKKS cross terms, decision in a GC |
+| II | anomaly detection | Prophet (Jaiswal et al. 2021) | 25 changepoints, daily/yearly/weekday/weekend seasonality, 99% interval, zero readings flagged | fit on each broker's share, σ via CKKS, decision in a GC |
+| III | load forecasting | SWHSA (Alberg & Last 2018) | SARIMA(0,0,1)(0,1,1)₂₄, 96-day window, 24 h ahead, slide 24 h, refit when MAPE_val / MAPE_tr > 1 | per-hour linear predictors, CKKS |
+| IV | load forecasting | RBF SVR (Chen, Chang & Lin 2004) | daily peak, 31 days ahead recursively; 7 previous peaks + weekday bits + holiday bit; winter training months; C, γ by validation | daily peaks and all SVR steps in a GC |
+| V | price forecasting | ARIMA (Contreras et al. 2003) | Eq. (3): multiplicative AR (1–5)(23,24,47,48,72,96,120,144)(168,336,504), MA (1,2)(24)(168,336,504) on log prices, 24 h ahead each day | per-hour linear predictors, CKKS |
+| VI | price forecasting | SVRARIMA (Che & Wang 2010) | SVR on lags 1–3, C = 1, δ = 20, ε = 0.001, ARIMA(24,0,1) on its residuals, 7-day training window | SVR in a GC, ARIMA via CKKS |
 
-**Protocol II** (`iot/p2_prophet_prep.py`, `iot/protocol2.cpp`). Prophet's configuration from the authors' notebook: piecewise-linear trend with 25 changepoints, daily (order 4) and yearly (order 10) seasonality, weekday/weekend weekly seasonality (order 3), Australian holidays, 99% interval; an anomaly is a reading outside the interval or equal to 0. With Gaussian priors the fit is linear in the readings (w = A·y with A public), so each broker fits on its share locally; the squared residuals need the cross term r1·r2, computed with CKKS; the decision runs in a garbled circuit. Every reading goes through DistAEAD first.
+Notes:
+- **I.** The occupancy terms of Ardakanian et al. depend on the reading being checked, so the anomaly model leaves them out. `--temp` is optional (weather is public data). `--holidays` takes a country code.
+- **II.** Jaiswal et al. use z = 2.576 (99%); Table A1 writes 3σ. Use `--k 3` for the latter.
+- **III and V.** The (S)ARIMA forecasts are written as linear predictors in past readings (AR(∞) form, up to `--truncate` 2304 lags; multi-step recursion folded into the weights), so the brokers only need CKKS; the coefficients stay secret-shared. Any factored ARIMA can be given with `--ar`, `--ma`, `--diff`, `--const`, `--log`, `--window`, `--horizon`, `--refit`. For Eq. (4) of Contreras et al. (California) use `--ar "1,2;23,24,47,48,72,96,120,144;167,168,169,192" --diff 1,24,168 --ma "1,2;24,48,72,96;144;168,336,504" --const 0`. With `--log` each publisher takes the log of its own reading before sharing and the subscriber exponentiates what it receives.
+- **IV.** With `--series`, every series is a publisher; each broker adds its shares to get the system load. `--months` sets the training months (paper: Jan–Mar, Oct–Dec).
+- Protocols I, III and V use hourly data; other spacings are resampled to hourly means.
+- Fixed point for CKKS is chosen from the data: shares keep about 13 bits of statistical hiding above the readings and the masks about 13 bits above the products they hide. The report prints the scale and mask used.
+- The model owner always trains in the clear and shares the model, as Table A1 assumes.
+
+Sanity runs on public data (localhost):
+
+| Protocol | data | secure / plaintext | cost |
+|---|---|---|---|
+| I | UCI household power, last 720 h | flags 100% equal | 0.1 s, 13 MiB |
+| II | Ausgrid customer 7, 35,088 readings, with DistAEAD (`iot/protocol2.cpp`) | 35,088 / 35,088 equal; precision 0.967, recall 0.956 vs Jaiswal et al. labels | 55 s |
+| III | UCI household power, last 720 h | MAPE 66.18% / 66.16% | 8 s, 339 MiB |
+| IV | ElectricityLoadDiagrams, 40 clients, last 31 days | MAPE 9.64% / 9.37% | 3 s, 2.7 GB |
+| V | Polish day-ahead prices, last week | MAPE 7.35% / 7.34% | 4 s, 158 MiB |
+| VI | Polish day-ahead prices, last week | MAPE 5.91% / 5.93% | 14 s, 364 M AND gates |
+
+Fixed-point differences: under 0.6% of the forecast for V (CKKS over 2304-lag sums) and IV (Q14 kernel through a 31-step recursion).
+
+### Paper reproductions
+
+Two protocols also have scripts that redo the cited paper's own experiment.
+
+**Protocol II** on the Jaiswal et al. labelled Ausgrid data (`iot/p2_prophet_prep.py`, `iot/protocol2.cpp`, every reading through DistAEAD first):
 
 ```sh
 python3 iot/p2_prophet_prep.py "<path to Anomaly labelled dataset.csv>" 7,29,30,64,155,160,184,202,206,215
@@ -100,63 +137,7 @@ Results (35,088 half-hourly readings per customer, two years):
 
 The remaining gap to the paper's labels comes from Prophet's per-customer tuned hyperparameters, which were not published (defaults are used here), and from replacing Prophet's Laplace changepoint prior by a Gaussian. Without DistAEAD the protocol takes about 6 s per customer; CKKS error on r² is about 0.002 Wh².
 
-Interval width: the code uses Prophet's 99% interval (z = 2.576, `Z` in `iot/p2_prophet_prep.py`), as Jaiswal et al. did. Table A1 of the DRCF paper writes the bound as 3σ; with z = 3 the protocol flags fewer readings and recall against the published labels drops to about 0.68 (precision about 0.98).
-
-**Protocol III** (Alberg & Last, 2018, on the UCI household data).
-
-`scripts/train_protocol3.py` (model owner), secure part in the generic engine `src/drcf_secure.cpp` (`ROWS` jobs).
-
-SWHSA, the paper's best hourly algorithm: SARIMA(0,0,1)(0,1,1)₂₄ (their 9.19% model), training window 96 days (2304 h), validation window 24 h, the window slides by 24 h, and the model is re-induced when MAPE_val / MAPE_tr > Th. The paper does not give Th; the default is 1 (a parameter of the script). The data is the hourly mean of Global_active_power.
-
-Secure flow: the owner fits each window in the clear and writes the 24 forecasts of the next day as linear predictors in past readings (AR(∞) form of the SARIMA, 2304 lags, recursion for hours 2–24 folded into the weights). The brokers evaluate them on the shared readings with CKKS cross terms; the coefficients stay secret-shared.
-
-```sh
-python3 examples/prepare_uci_household.py household_power_consumption.txt > build/uci_hourly.csv
-python3 scripts/train_protocol3.py build/uci_hourly.csv build/job_p3.txt build/reference_p3.txt 365
-cd build && ../run.sh ./drcf_secure job_p3.txt result_p3.txt
-```
-
-Results, last 365 days of the data (8,760 hourly forecasts, 194 refits):
-
-| | MAPE |
-|---|---|
-| secure | 63.26% |
-| plaintext linear predictor | 63.26% (max difference 0.008 kW) |
-| statsmodels SARIMA forecast | 64.68% |
-| naive hourly baseline, y(t−24) | 68.74% |
-
-Cost: 92 s and 4.1 GB of localhost traffic for the year (CKKS only, no garbled circuit). The truncated predictor matches statsmodels to 0.002 kW in the median; in about 7% of the hours it differs by more than 0.1 kW, in windows where the fitted seasonal MA term is close to −1 and 2304 lags are not enough. The MAPE is much higher than the paper's because this is one household (spiky, low night load) and theirs were six district meters; the gain over the naive baseline is similar. CKKS mask is 2^34 here (job tag `MASK`) at scale 10⁴: the products being hidden are below 2^21, and a 2^40 mask over 1758-term sums costs about 0.3 kW of precision.
-
-**Protocol IV** (Chen, Chang & Lin, 2004, on ElectricityLoadDiagrams).
-
-`scripts/train_protocol4.py` (model owner), `src/protocol4_eld.cpp` (brokers).
-
-The EUNITE 2001 winning model, on the system load (sum of the 321 clients of the hourly Lai et al. version): daily maximum load, 31-day recursive forecast; 14 attributes = maxima of the previous 7 days scaled to [0, 1], six weekday bits (Sunday all zero), one holiday bit; no temperature; winter months only (Jan–Mar, Oct–Dec); RBF ε-SVR with ε = 0.1 (LIBSVM default); C and γ chosen by recursive prediction of a January validation month (January 2013); holiday flags removed in the forecast month, as the paper did. Test month: January 2014.
-
-Secure flow: every client sends shares of its hourly readings for the 7 days before the month; each broker adds its shares (system load); the garbled circuit takes the daily maxima, scales them, and runs the 31 SVR steps, each prediction feeding the next, with support vectors, α, b, min and range secret. Calendar bits are public.
-
-```sh
-python3 scripts/train_protocol4.py electricity.txt.gz build/model_p4.txt
-cd build && ../run.sh ./protocol4_eld model_p4.txt
-```
-
-| | MAPE, January 2014 |
-|---|---|
-| secure | 5.85% |
-| plaintext reference | 5.98% |
-
-23 support vectors (C = 1, γ = 0.5). Cost: 1.1 s, 18 M AND gates, 558 MiB. Fixed-point error grows through the recursion and stays below 0.26% of the forecast. The paper reports 1.95% on the EUNITE data (one regional utility); here the target is the sum of 321 Portuguese clients.
-
-**Protocol VI** (Che & Wang, 2010, on the Polish day-ahead market).
-
-`src/protocol6_polish.cpp`, garbled-circuit SVR in `include/svr_gc.h`, model owner in `scripts/train_protocol6.py`.
-
-SVRARIMA as in the paper: min-max normalisation on the training window (Eq. 3.1); SVR on the phase-space reconstruction with m = 3, τ = 1 (Eq. 2.1–2.3); RBF kernel exp(−‖x − x′‖²/2δ²) with C = 1, δ = 20, ε = 0.001 (Figs. 4, 7); ARIMA on the SVR residuals with p = (24), d = (0), q = (1) for February weeks and p = (1, 24), d = (24), q = (1) for April weeks; training on the 7 days before each forecast week; one-hour-ahead forecasts; RMSE and MAPE. Test weeks are the paper's calendar weeks (Feb 26 – Mar 3, Apr 1 – 7) in 2018, 2019 and 2020.
-
-The model owner trains in the clear and secret-shares the model (Table A1 input β). Secure flow on shared prices:
-1. Garbled circuit: normalisation, then N_t = b + Σ α_k exp(−γ‖x_t − sv_k‖²) with support vectors, α and b all secret. exp is fixed point: 2^−y with y split into integer and fraction, a degree-4 polynomial for the fraction (error 3.5e-6) and a secret shift for the integer part. Residuals e_t = x_t − N_t leave the circuit as additive shares.
-2. CKKS cross terms: the ARIMA one-step forecast of the residual, written as its linear predictor Σ w_j e_{t−j} (AR(∞) form truncated at 144 lags).
-3. Garbled circuit: forecast = (N_t + L_t)·range + min, output as additive shares.
+**Protocol VI** on the paper's test weeks of the Polish market (`scripts/train_protocol6.py`, `src/protocol6_polish.cpp`):
 
 ```sh
 python3 scripts/train_protocol6.py <polish repo>/data/data.xlsx build
@@ -172,9 +153,7 @@ cd build && ../run.sh ./protocol6_polish prices_p6.txt model_p6.txt reference_p6
 | 2019-04-01 | 3.55% | 3.54% | 10.54% | 0.37 PLN |
 | 2020-04-01 | 5.18% | 5.18% | 17.10% | 0.38 PLN |
 
-As in the paper, the hybrid beats SVR alone every week. Cost per week (168 forecasts, 164 support vectors): about 13 s, 360 M AND gates and 11 GB of localhost traffic, almost all of it the 27,500 kernel evaluations in the garbled circuit.
-
-
+As in the paper, the hybrid beats SVR alone every week.
 
 ## Dashboard
 
@@ -187,45 +166,27 @@ cd build && ../run.sh ./drcf_demo && cd ..
 python3 scripts/make_dashboard.py build/trace.js    # writes docs/index.html
 ```
 
-## Try it on your own data
+## Generic models
 
-`drcf.py` lets you run DRCF on any time series and decide which model suits it. It plays the model owner (trains in the clear on a training window), runs the real two-broker computation on secret-shared data with `build/drcf_secure`, and reports accuracy, how closely the secure result matches the plaintext model, and the cost.
+Besides the six protocols, `drcf.py --model ...` runs the building blocks with your own choices:
 
-Input: a CSV with a time column and a value column (optionally a series id column, public covariates such as temperature, and a 0/1 anomaly label column for scoring). The last `--test` points are evaluated.
+| `--model` | what it computes | secure realisation |
+|---|---|---|
+| `linear` | ŷ = Σ βⱼ·y(t − lagⱼ) + public features (intercept, hour, weekday, `--exog` columns) | CKKS cross terms |
+| `arima` | any factored (S)ARIMA, sliding window, multi-step | CKKS |
+| `parx` | PARX with your `--p`, temperature and holidays | CKKS, GC decision |
+| `prophet` | trend + seasonality, anomaly if \|y − ŷ\| > k·σ | shares + CKKS + GC |
+| `svr` | RBF SVR on lags, optional `--arima p,d,q` on its residuals | GC + CKKS |
+| `svr-daily` | daily-peak SVR, recursive | GC |
 
 ```sh
-pip install pandas numpy scikit-learn statsmodels   # front end only
-
-# forecasting with a linear model on lags plus public features
-python3 drcf.py --data load.csv --time timestamp --value kwh --task forecast --model linear \
+python3 drcf.py --data load.csv --time ts --value kwh --task forecast --model linear \
                 --lags 1,2,24,168 --public intercept,hour,weekday --exog temperature
-
-# anomaly detection, Prophet-style model (Protocol II), scored against labels
-python3 drcf.py --data meter.csv --time ts --value kwh --label anomaly --task anomaly --model prophet --k 3
-
-# RBF SVR with ARIMA on its residuals (Protocol VI)
-python3 drcf.py --data prices.csv --time date --value price --task forecast --model svr \
-                --lags 1,2,3 --svr-C 1 --svr-delta 20 --svr-epsilon 0.001 --arima 24,0,1 --train 168
+python3 drcf.py --data load.csv --time ts --value kw --task forecast --model arima \
+                --ar "1,2" --ma "24" --diff 24 --window 1344 --horizon 24 --refit every
 ```
 
-| `--model` | what it computes | secure realisation | covers |
-|---|---|---|---|
-| `linear` | ŷ = Σ βⱼ·y(t − lagⱼ) + public features (intercept, hour, weekday, `--exog` columns) | CKKS cross terms for secret lags × shared β | AR, ARIMA predictors, regression, PARX with weather columns (Protocols I, III, V) |
-| `prophet` | trend + daily, yearly, weekday and weekend seasonality; anomaly if \|y − ŷ\| > k·σ (`--zero-rule` adds y = 0) | fit on each broker's share, σ via CKKS, decision in a GC | Protocol II |
-| `svr` | RBF SVR on min-max normalised lags, optional `--arima p,d,q` on its residuals | exact kernel in a GC, ARIMA via CKKS | Protocols IV, VI |
-
-Tasks: `forecast` (one step ahead for every test point) or `anomaly` (flag test points; for `linear` and `svr` the threshold is k times the training-residual standard deviation). Run `python3 drcf.py --help` for every option. `examples/prepare_ausgrid.py` and `examples/prepare_polish.py` turn the two public datasets into the CSV format above.
-
-Example runs (localhost):
-
-| data | task, model | accuracy (secure / plaintext) | secure = plaintext | cost |
-|---|---|---|---|---|
-| Polish prices, last week to 2019-03-04 | forecast, `linear` lags 1,2,24,168 + hour, weekday, demand, wind | MAPE 2.918% / 2.918% | max diff 0.01 PLN | 0.04 s, 0.9 MiB |
-| same week | forecast, `svr` lags 1–3 + ARIMA(24,0,1) | MAPE 5.91% / 5.93% | max diff 0.24 PLN | 14 s, 364 M AND gates |
-| Ausgrid customer 7, 35,088 points | anomaly, `prophet` k = 2.576, zero rule | F1 0.961 vs Jaiswal et al. labels | 99.99% of flags | 1.2 s, 487 MiB |
-| Ausgrid customer 7, last 17,520 points | anomaly, `linear` lags 1,2,48,336 + hour, weekday | F1 0.507 vs labels | 99.99% of flags | 1.1 s, 254 MiB |
-
-Cost guide: `linear` and `prophet` take seconds for tens of thousands of points. `svr` costs about 2,100 AND gates per test point × support vector, so keep that product around 30,000 or below.
+Tasks: `forecast` or `anomaly` (threshold = k × training-residual standard deviation). Cost guide: CKKS models take seconds for tens of thousands of points; `svr` costs about 2,100 AND gates per test point × support vector.
 
 ## Protocol notes
 
@@ -259,7 +220,7 @@ Full pipeline (`drcf_demo`: 3 meters × 168 hours, 504 publications, 432 forecas
 - **Not audited, not constant-time.** Do not use with real keys or data.
 - **Demo harness.** `drcf_demo` gives both broker processes the same seed to generate synthetic data and simulates the publishers and the subscriber inside B1's process; brokers only feed their own shares into the protocols.
 - **Not yet included.** MQTT/Mosquitto integration and Protocols I and V of Table A1 (their models are linear predictors, so they can be run on your own data with `drcf.py --model linear`).
-- **Model training.** For Protocols III, IV and VI the model owner trains in the clear on its own historical data and shares the model, as Table A1 assumes; training on shared data is not implemented.
+- **Model training.** For every protocol except II the model owner trains in the clear on its own historical data and shares the model, as Table A1 assumes; training on shared data is not implemented.
 
 ## Citation
 

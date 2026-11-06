@@ -1,10 +1,10 @@
-// DRCF Table A1, Protocol IV: Pi_ML-LoadForecast on ElectricityLoadDiagrams20112014, with the SVR model of
-// Chen, Chang & Lin (IEEE TPWRS 19(4), 2004). Model trained by scripts/train_protocol4.py.
+// DRCF Table A1, Protocol IV: Pi_ML-LoadForecast with the daily-peak SVR model of
+// Chen, Chang & Lin (IEEE TPWRS 19(4), 2004). Model file written by drcf.py --protocol 4.
 //
-//   ./run.sh build/protocol4_eld model_p4.txt
+//   ./run.sh build/protocol4_daily model_p4.txt [result.txt]
 //
 // Two-party flow (B1 = ALICE, B2 = BOB). Inputs: additive shares of every client's hourly load for the 7 days before
-// the forecast month (321 publishers), and of the model (support vectors, alpha, b, normalisation min/range).
+// the forecast month (one share vector per publisher), and of the model (support vectors, alpha, b, normalisation min/range).
 //   local: system load per hour = sum of the clients' shares (each broker adds its own shares)
 //   GC   : daily maximum over the 24 hours of each day; x = (max - min) / range
 //          31 days, recursively: N_d = b + sum_k alpha_k exp(-gamma ||f_d - sv_k||^2),
@@ -27,10 +27,11 @@ int main(int argc, char** argv) {
     int party = parse_party(argv), port = peer_port();
     std::string mf = argc > 2 ? argv[2] : "model_p4.txt";
     std::ifstream f(mf); std::string tag;
-    double lo = 0, hi = 0, gamma = 0, b = 0; int nsv = 0, m = 14, ndays = 0, ncl = 0, nh = 0;
+    double lo = 0, hi = 0, gamma = 0, b = 0, scale = 1; int nsv = 0, m = 14, ndays = 0, ncl = 0, nh = 0;
     std::vector<double> alpha, act, ref; std::vector<std::vector<double>> sv; std::vector<std::vector<int>> cal; std::vector<std::vector<int64_t>> hist;
     while (f >> tag) {
         if (tag == "NORM") f >> lo >> hi;
+        else if (tag == "SCALE") f >> scale;   // HIST readings are integers at this scale
         else if (tag == "SVR") { f >> gamma >> b >> nsv; alpha.resize(nsv); sv.assign(nsv, std::vector<double>(m)); for (int k = 0; k < nsv; k++) { f >> alpha[k]; for (auto& v : sv[k]) f >> v; } }
         else if (tag == "CAL") { f >> ndays; cal.assign(ndays, std::vector<int>(7)); for (auto& r : cal) for (auto& v : r) f >> v; }
         else if (tag == "HIST") { f >> ncl >> nh; hist.assign(ncl, std::vector<int64_t>(nh)); for (auto& r : hist) for (auto& v : r) f >> v; }
@@ -49,7 +50,7 @@ int main(int argc, char** argv) {
     for (int k = 0; k < nsv; k++) for (int c = 0; c < m; c++) m_in.push_back(split(q14(sv[k][c]), 20));
     for (int k = 0; k < nsv; k++) m_in.push_back(split(q14(alpha[k]), 20));
     m_in.push_back(split(q14(b), 20));
-    m_in.push_back(split(std::llround(lo), 40)); m_in.push_back(split(std::llround(hi - lo), 40));
+    m_in.push_back(split(std::llround(lo * scale), 40)); m_in.push_back(split(std::llround((hi - lo) * scale), 40));
     std::vector<int64_t> load(nh, 0);                       // each broker: sum of its shares of the clients' readings
     for (int c = 0; c < ncl; c++) for (int h = 0; h < nh; h++) load[h] += split(hist[c][h], 30);
 
@@ -84,9 +85,14 @@ int main(int argc, char** argv) {
 
     if (!b1) { io->send_data(out.data(), 8 * ndays); io->flush(); return 0; }
     std::vector<int64_t> o2(ndays); io->recv_data(o2.data(), 8 * ndays);
+    if (argc > 3) {   // result file for drcf.py
+        std::ofstream r(argv[3]); r << "COST " << ms << " " << ands * 1e6 << " " << mib << "\nOUT " << ndays << "\n";
+        for (int d = 0; d < ndays; d++) r << (double)(out[d] + o2[d]) / scale << "\n";
+    }
+    if ((int)act.size() < ndays || (int)ref.size() < ndays) return 0;
     double ape = 0, aper = 0, md = 0, mr = 0;
     for (int d = 0; d < ndays; d++) {
-        double v = (double)(out[d] + o2[d]);
+        double v = (double)(out[d] + o2[d]) / scale;
         ape += std::fabs((v - act[d]) / act[d]); aper += std::fabs((ref[d] - act[d]) / act[d]);
         md = std::max(md, std::fabs(v - ref[d])); mr = std::max(mr, std::fabs(v - ref[d]) / ref[d]);
     }
