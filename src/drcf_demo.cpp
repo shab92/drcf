@@ -2,7 +2,7 @@
 //   ./run.sh build/drcf_demo            (writes trace.js for the dashboard, from B1's process)
 //
 // Brokers: B1 = ALICE, B2 = BOB. Every cryptographic step is a real 2-party protocol:
-//   DistAEAD (ASCON-128 in GC), B2A / A2B / threshold (GC), cross terms (SEAL BFV),
+//   DistAEAD (ASCON-128 in GC), B2A / A2B / threshold (GC), cross terms (SEAL CKKS, fresh keys),
 //   2-party threshold ECDSA (DKLs23, Protocol 3.4) and 2-party Schnorr on secp256k1.
 // Test harness only (clearly outside the protocol): both processes derive the same
 // synthetic data from a shared seed, publishers and the subscriber are simulated inside
@@ -23,7 +23,8 @@ using namespace emp;
 using bytes = std::vector<uint8_t>;
 using clk = std::chrono::steady_clock;
 
-static const int METERS = 3, DAYS = 7, H = DAYS * 24, SCALE_B = 1000;
+static const int METERS = 3, DAYS = 7, H = DAYS * 24;
+static const double Q = 1000.0;   // fixed point used only when CKKS outputs enter a garbled circuit
 static const int64_t ALERT_WH = 900;  // |forecast - actual| above this (Wh) raises an alert
 
 static std::string hex(const bytes& b, size_t max = 64) {
@@ -89,10 +90,8 @@ int main(int argc, char** argv) {
     int party = parse_party(argv), port = peer_port();
     auto io = party == ALICE ? NetIO::listen(port, true) : NetIO::connect(peer_ip(), port, true);
     SH2PCSession s(io.get(), party);
-    he::Party HE;
     tsig::Curve C;   // secp256k1
     dkls23::OTPair ots(party, io.get());
-    const uint64_t t = HE.t;
     const bool b1 = party == ALICE;
     Trace T{{}, io.get(), &s};
     auto mine = [&](const bytes& a, const bytes& b) -> const bytes& { return b1 ? a : b; };
@@ -101,9 +100,7 @@ int main(int argc, char** argv) {
     std::mt19937_64 g(20260509);
     std::vector<std::pair<int, int>> spikes;
     auto X = make_data(g, spikes);
-    auto beta_f = fit(X);
-    std::vector<int64_t> beta(4);
-    for (int i = 0; i < 4; i++) beta[i] = std::llround(beta_f[i] * SCALE_B);
+    auto beta = fit(X);   // real-valued AR coefficients
 
     // ================= Setup =================
     T.begin();
@@ -118,18 +115,20 @@ int main(int argc, char** argv) {
     T.begin(); auto sk = tsig::schnorr_keygen(C, io.get(), party);
     T.end("Setup", "TS.KeyGen (Schnorr)", "B1", "B2", "Additive key shares; public pk = X1 + X2",
           "pk = " + hex(C.enc(sk.pk.get())), "pk = " + hex(C.enc(sk.pk.get())));
-    std::vector<uint64_t> beta_sh(4);
+    std::vector<double> beta_sh(4);
     std::ostringstream bv1, bv2;
+    bv1.precision(5); bv2.precision(5);
+    std::uniform_real_distribution<double> bmask(-64.0, 64.0);   // |beta2 * x1| <= 64 * 2^16 = 2^22 stays under the 2^23 CKKS bound
     for (int i = 0; i < 4; i++) {
-        uint64_t r = g() % t; beta_sh[i] = b1 ? r : (convert::enc_signed(beta[i], t) + t - r) % t;
-        bv1 << (i ? ", " : "") << r; bv2 << (i ? ", " : "") << (convert::enc_signed(beta[i], t) + t - r) % t;
+        double r = bmask(g); beta_sh[i] = b1 ? r : beta[i] - r;
+        bv1 << (i ? ", " : "") << r; bv2 << (i ? ", " : "") << beta[i] - r;
     }
     T.begin();
-    T.end("Setup", "Model shares", "Model owner", "B1,B2", "AR(1,2,24) coefficients beta = beta(1) + beta(2) mod t (fixed point x1000)",
+    T.end("Setup", "Model shares", "Model owner", "B1,B2", "AR(1,2,24) coefficients as real numbers, beta = beta(1) + beta(2)",
           "beta(1) = [" + bv1.str() + "]", "beta(2) = [" + bv2.str() + "]");
 
     // ================= Publish =================
-    std::vector<std::vector<uint64_t>> D(METERS, std::vector<uint64_t>(H));   // this broker's additive DB
+    std::vector<std::vector<int64_t>> D(METERS, std::vector<int64_t>(H));     // this broker's additive DB
     std::vector<uint32_t> xorsh(METERS * H);
     bytes ex_ct, ex_ad, ex_s1, ex_s2;
     T.begin();
@@ -162,33 +161,36 @@ int main(int argc, char** argv) {
     }
 
     T.begin();
-    auto xa = convert::b2a(s, xorsh, t);
+    auto xa = convert::b2a(s, xorsh, 16);
     for (int m = 0; m < METERS; m++) for (int h = 0; h < H; h++) D[m][h] = xa[m * H + h];
-    T.end("Publish", "B2A (XOR → additive)", "B1", "B2", "GC converts XOR shares of each int32 reading into additive shares mod t (t = " + std::to_string(t) + ")",
+    T.end("Publish", "B2A (XOR → additive)", "B1", "B2", "GC converts XOR shares of each int32 reading into additive shares x = x(1) + x(2), mask in [-2^16, 2^16], used as reals in CKKS",
           "D(1)[0][19] = " + std::to_string(D[0][19]), "D(2)[0][19] = " + std::to_string(D[0][19]));
 
     // ================= Compute =================
     // features for every (m, h >= 24): [1, x_{h-1}, x_{h-2}, x_{h-24}]
     const int F = 4, NF = METERS * (H - 24);
-    std::vector<uint64_t> feat(NF * F), bvec(NF * F);
+    std::vector<double> feat(NF * F), bvec(NF * F);
     for (int m = 0; m < METERS; m++)
         for (int h = 24; h < H; h++) {
             int k = m * (H - 24) + (h - 24);
-            feat[k * F + 0] = b1 ? 1 : 0;
-            feat[k * F + 1] = D[m][h - 1]; feat[k * F + 2] = D[m][h - 2]; feat[k * F + 3] = D[m][h - 24];
+            feat[k * F + 0] = b1 ? 1.0 : 0.0;
+            feat[k * F + 1] = (double)D[m][h - 1]; feat[k * F + 2] = (double)D[m][h - 2]; feat[k * F + 3] = (double)D[m][h - 24];
             for (int i = 0; i < F; i++) bvec[k * F + i] = beta_sh[i];
         }
     T.begin();
-    auto yhat = he::inner_products(HE, io.get(), party, feat, bvec, F);
-    T.end("Compute", "HE cross terms (BFV)", "B1", "B2",
-          std::to_string(NF) + " AR forecasts in one batched BFV round trip each way (N = 8192, own keys per broker); noise budget left " + std::to_string(he::last_budget) + " bits",
-          "Enc_1(x(1)) → B2, gets Dec(b(2)·x(1) + ρ)", "Enc_2(x(2)) → B1, keeps −Σρ");
-    std::vector<uint64_t> dlt(NF);
+    auto yhat = he::inner_products(io.get(), party, feat, bvec, F);
+    auto hs = he::last;
+    T.end("Compute", "HE cross terms (CKKS)", "B1", "B2",
+          std::to_string(NF) + " AR forecasts in one batched CKKS round trip each way (N = 8192, scale 2^36); each broker generated fresh keys (" + std::to_string((int)hs.keygen_ms) + " ms) and erased them after use",
+          "C(1) = Enc(pk1, x(1)) → B2; Y(1) = Dec(sk1, C_T) + δ1", "C(2) = Enc(pk2, x(2)) → B1; Y(2) = Dec(sk2, C_T′) + δ2");
+    // each broker rounds its real share Y(i) to fixed point before entering the GC
+    std::vector<int64_t> yfix(NF), dlt(NF);
+    for (int k = 0; k < NF; k++) yfix[k] = std::llround(yhat[k] * Q);
     for (int m = 0; m < METERS; m++)
-        for (int h = 24; h < H; h++) { int k = m * (H - 24) + (h - 24); dlt[k] = (convert::mulmod(D[m][h], SCALE_B, t) + t - yhat[k]) % t; }
+        for (int h = 24; h < H; h++) { int k = m * (H - 24) + (h - 24); dlt[k] = D[m][h] * (int64_t)Q - yfix[k]; }
     T.begin();
-    auto alert = convert::threshold(s, dlt, t, (uint64_t)ALERT_WH * SCALE_B);
-    T.end("Compute", "GC threshold (anomaly)", "B1", "B2", "|1000·x_t − ŷ_t| > " + std::to_string(ALERT_WH * SCALE_B) + " decided in a garbled circuit; output stays XOR-shared",
+    auto alert = convert::threshold(s, dlt, (uint64_t)(ALERT_WH * Q));
+    T.end("Compute", "GC threshold (anomaly)", "B1", "B2", "Y(1), Y(2) enter a garbled circuit (Sec. 4.1.3): |x_t − ŷ_t| > " + std::to_string(ALERT_WH) + " Wh decided inside; output stays XOR-shared",
           "alert(1) bits", "alert(2) bits");
 
     // ================= Subscribe =================
@@ -196,14 +198,14 @@ int main(int argc, char** argv) {
     const int REQ_M = 0, REQ_N = 24;
     std::string reqs = "req/S7/F=forecast+alerts/meter0/last24h";
     bytes req(reqs.begin(), reqs.end());
-    std::vector<uint64_t> ysel(REQ_N);
-    for (int i = 0; i < REQ_N; i++) ysel[i] = yhat[REQ_M * (H - 24) + (H - 24 - REQ_N) + i];
+    std::vector<int64_t> ysel(REQ_N);
+    for (int i = 0; i < REQ_N; i++) ysel[i] = yfix[REQ_M * (H - 24) + (H - 24 - REQ_N) + i];
     T.begin();
-    auto yx = convert::a2b_signed(s, ysel, t);
+    auto yx = convert::a2b(s, ysel);
     bytes Y;
     for (int i = 0; i < REQ_N; i++) { auto b = u64b(yx[i]); Y.insert(Y.end(), b.begin(), b.end()); }
     for (int i = 0; i < REQ_N; i++) Y.push_back(alert[REQ_M * (H - 24) + (H - 24 - REQ_N) + i] & 1);
-    T.end("Subscribe", "A2B (additive → XOR)", "B1", "B2", "Requested result Y (24 forecasts + 24 alert flags, " + std::to_string(Y.size()) + " B) as XOR shares Y(1) ⊕ Y(2)",
+    T.end("Subscribe", "A2B (additive → XOR)", "B1", "B2", "Requested result Y (24 forecasts in mWh + 24 alert flags, " + std::to_string(Y.size()) + " B) as XOR shares Y(1) ⊕ Y(2)",
           "Y(1) = " + hex(Y, 24), "Y(2) = " + hex(Y, 24));
     bytes n2 = rnd(g, 16);
     T.begin();
@@ -242,26 +244,31 @@ int main(int argc, char** argv) {
     bytes bad = tosign; bad[3] ^= 1;
     bool rej = !dkls23::verify(C, ek.pk.get(), bad, sig) && !tsig::schnorr_verify(C, sk.pk.get(), bad, ssig);
     // reference: same model in the clear
-    int match = 0;
+    int match = 0; double maxerr = 0;
     std::vector<double> fc(REQ_N); std::vector<int> al(REQ_N);
     if (Yd) for (int i = 0; i < REQ_N; i++) {
         int h = H - REQ_N + i;
-        int64_t ref = beta[0] + beta[1] * X[REQ_M][h - 1] + beta[2] * X[REQ_M][h - 2] + beta[3] * X[REQ_M][h - 24];
-        int64_t got = 0; for (int b = 0; b < 8; b++) got |= (int64_t)(*Yd)[8 * i + b] << (8 * b);
+        double ref = beta[0] + beta[1] * X[REQ_M][h - 1] + beta[2] * X[REQ_M][h - 2] + beta[3] * X[REQ_M][h - 24];
+        int64_t gi = 0; for (int b = 0; b < 8; b++) gi |= (int64_t)(*Yd)[8 * i + b] << (8 * b);
+        double got = gi / Q;
         int a = (*Yd)[8 * REQ_N + i];
-        int64_t diff = (int64_t)X[REQ_M][h] * SCALE_B - ref;
-        if (got == ref && a == (std::llabs(diff) > ALERT_WH * SCALE_B)) match++;
-        fc[i] = got / (double)SCALE_B; al[i] = a;
+        double diff = X[REQ_M][h] - ref;
+        bool near = std::fabs(std::fabs(diff) - ALERT_WH) < 0.01;   // CKKS error can only flip a decision this close to the threshold
+        if (std::fabs(got - ref) < 0.01 && (a == (std::fabs(diff) > ALERT_WH) || near)) match++;
+        maxerr = std::max(maxerr, std::fabs(got - ref));
+        fc[i] = got; al[i] = a;
     }
-    printf("[B1] tags valid %d/%d | tampered publication rejected | ECDSA %s | Schnorr %s | tampered C_Y rejected %s | subscriber result matches clear model %d/%d\n",
-           dec_ok, METERS * H, v_ecdsa ? "OK" : "FAIL", v_schnorr ? "OK" : "FAIL", rej ? "yes" : "NO", match, REQ_N);
+    printf("[B1] tags valid %d/%d | tampered publication rejected | ECDSA %s | Schnorr %s | tampered C_Y rejected %s | subscriber result matches clear model %d/%d (max CKKS error %.1e Wh)\n",
+           dec_ok, METERS * H, v_ecdsa ? "OK" : "FAIL", v_schnorr ? "OK" : "FAIL", rej ? "yes" : "NO", match, REQ_N, maxerr);
 
     // all forecasts + alerts in the clear for the dashboard charts (computed by reconstructing shares: harness only)
     std::ofstream f("trace.js");
     f << "// Generated by drcf_demo (C++ brokers B1/B2, EMP sh2pc + SEAL + OpenSSL). Do not edit.\n";
     f << "window.DRCF_TRACE = {\n  generated: " << js("2026-11-05") << ",\n";
-    f << "  params: {meters: " << METERS << ", hours: " << H << ", t: " << js(std::to_string(t)) << ", scaleBeta: " << SCALE_B
-      << ", alertWh: " << ALERT_WH << ", beta: [" << beta[0] << "," << beta[1] << "," << beta[2] << "," << beta[3] << "], heN: 8192, curve: \"secp256k1\", cipher: \"ASCON-128 (v1.2)\"},\n";
+    f << "  params: {meters: " << METERS << ", hours: " << H << ", he: \"CKKS (SEAL 4.1.2), N = 8192, coeff {60,36,60}, scale 2^36\""
+      << ", alertWh: " << ALERT_WH << ", beta: [" << beta[0] << "," << beta[1] << "," << beta[2] << "," << beta[3] << "], curve: \"secp256k1\", cipher: \"ASCON-128 (v1.2)\"},\n";
+    f << "  ckks: {ctBytesOut: " << hs.ct_bytes_out << ", ctBytesIn: " << hs.ct_bytes_in << ", plainBytes: " << hs.plain_bytes << ", slots: " << hs.slots_used
+      << ", keygenMs: " << hs.keygen_ms << ", maxErrWh: " << maxerr << "},\n";
     f << "  checks: {tagsValid: " << dec_ok << ", readings: " << METERS * H << ", ecdsa: " << v_ecdsa << ", schnorr: " << v_schnorr
       << ", tamperedRejected: " << rej << ", resultMatches: " << match << ", resultSize: " << REQ_N << "},\n";
     f << "  steps: [\n";
@@ -273,15 +280,15 @@ int main(int argc, char** argv) {
     f << "  ],\n  forecast: [\n";
     for (int m = 0; m < METERS; m++) {
         f << "    [";
-        for (int h = 24; h < H; h++) { double r = (beta[0] + beta[1] * X[m][h - 1] + beta[2] * X[m][h - 2] + beta[3] * X[m][h - 24]) / (double)SCALE_B; f << std::lround(r) << (h + 1 < H ? "," : ""); }
+        for (int h = 24; h < H; h++) { double r = beta[0] + beta[1] * X[m][h - 1] + beta[2] * X[m][h - 2] + beta[3] * X[m][h - 24]; f << std::lround(r) << (h + 1 < H ? "," : ""); }
         f << "],\n";
     }
     f << "  ],\n  alerts: [\n";
     for (int m = 0; m < METERS; m++) {
         f << "    [";
         for (int h = 24; h < H; h++) { int k = m * (H - 24) + (h - 24); (void)k;
-            int64_t ref = beta[0] + beta[1] * X[m][h - 1] + beta[2] * X[m][h - 2] + beta[3] * X[m][h - 24];
-            f << (std::llabs((int64_t)X[m][h] * SCALE_B - ref) > ALERT_WH * SCALE_B) << (h + 1 < H ? "," : ""); }
+            double ref = beta[0] + beta[1] * X[m][h - 1] + beta[2] * X[m][h - 2] + beta[3] * X[m][h - 24];
+            f << (std::fabs(X[m][h] - ref) > ALERT_WH) << (h + 1 < H ? "," : ""); }
         f << "],\n";
     }
     f << "  ],\n  spikes: [";

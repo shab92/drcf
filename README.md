@@ -11,8 +11,8 @@ K = K1 ^ K2 and the plaintext never exist in either broker.
 | Paper step | File | How |
 |---|---|---|
 | DistAEAD.Enc / Dec | `include/distaead.h`, `include/ascon_circuit.h` | ASCON-128 inside a Yao GC (EMP sh2pc, half-gates) |
-| XOR ↔ additive shares, thresholds | `include/convert.h` | GC (EMP `UInt_T`), arithmetic mod the BFV plaintext modulus t |
-| Linear models (AR / regression) | `include/he.h` | SEAL BFV, own keys per broker, masked cross terms β₂x₁, β₁x₂ |
+| XOR ↔ additive shares, thresholds | `include/convert.h` | GC (EMP `UInt_T`), signed 64-bit additive shares |
+| Joint evaluation (regression) | `include/he.h` | CKKS (SEAL 4.1.2), fresh keys per broker per evaluation, encrypted cross terms, Y(i) = Dec(sk_i, C_T) + δ_i (Sec. 4.1.3) |
 | TS.KeyGen / TS.Sign | `include/dkls23.h`, `include/tsig.h` | Threshold ECDSA per Doerner, Kondi, Lee, shelat (S&P 2024) Protocol 3.4 with n = t = 2, and 2-party Schnorr, secp256k1 |
 | Full pipeline | `src/drcf_demo.cpp` | Publish → Compute → Subscribe, writes `trace.js` for the dashboard |
 
@@ -25,6 +25,11 @@ K = K1 ^ K2 and the plaintext never exist in either broker.
 
 ## Build
 Needs EMP-toolkit (emp-tool, emp-ot, emp-sh2pc; current master, C++20 `SH2PCSession` API), Microsoft SEAL 4.1 and OpenSSL 3.
+
+## CKKS joint evaluation (Sec. 4.1.3)
+`include/he.h` follows the paper: real-valued shares X = X1 + X2 and β = β1 + β2. For each joint evaluation every broker generates fresh CKKS keys, encrypts its own share, and the brokers exchange encrypted cross terms (C(1)·β2 + δ, C(2)·β1 + δ′). Each broker outputs Y(i) = Dec(sk_i, C_T) + δ_i; the keys are erased afterwards. For thresholds, each broker rounds Y(i) to fixed point and the brokers continue in a garbled circuit.
+
+Parameters: N = 8192, coeff modulus {60, 36, 60}, scale 2^36 (128-bit security per SEAL's tables). Values must stay below q0 / (2·scale) = 2^23; the masks (δ up to 2^20, reading shares up to 2^16, β shares up to 64) keep inside that: 64·2^16 + 2^20 < 2^23. Measured error: at most 1e-3 on 400 inner products (test_compute) and 9e-4 Wh on the subscriber's result (drcf_demo), which is the mWh rounding before the GC.
 
 ## Threshold ECDSA (DKLs23)
 `include/dkls23.h` follows Protocol 3.4 of "Threshold ECDSA in Three Rounds" (Doerner, Kondi, Lee, shelat, IEEE S&P 2024) for two parties:
@@ -77,11 +82,11 @@ Check: 8-byte message, 5-byte AD: (24 + 6 + 6)·320 − 256 = 11,264.
 
 ## Full pipeline (drcf_demo, 3 meters × 168 h, localhost)
 504 publications, 432 forecasts, 1 subscriber request. About 1 s end to end, 195 MiB between the brokers, 6.3 M AND gates.
-DistAEAD.Dec is 84% of the time. HE cross terms for all 432 forecasts: 28 ms. DKLs23 ECDSA: about 13 ms and 135 KiB per signature after setup. 2-party Schnorr: 0.5 ms.
+DistAEAD.Dec is 84% of the time. CKKS cross terms for all 432 forecasts: 36 ms including fresh key generation (12 ms). DKLs23 ECDSA: about 13 ms and 135 KiB per signature after setup. 2-party Schnorr: 0.5 ms.
 
 ## Caveats
 - Semi-honest (as in the paper). Not audited. Not constant-time. Localhost numbers have no network latency.
-- HE: the helper's reply is masked with fresh ρ, but there's no noise flooding. For circuit privacy against a key owner who inspects noise, add flooding or switch to a scheme with circuit privacy.
+- CKKS: shares and masks are real numbers with bounded range, so hiding is statistical and limited by CKKS headroom: about 4 bits of margin for readings (mask 2^16 vs readings up to about 3,000 Wh) and about 6 to 8 bits for the AR coefficients (mask 64), but under 1 bit for the intercept (45.6). Larger N or a bigger q0 buys more margin. The evaluator's reply has no noise flooding, so a key owner who inspects CKKS noise could learn a little about the other's β share. Results are approximate (see above).
 - ECDSA: the DKLs23 consistency checks are implemented; the VOLE is OT-based but is not the paper's exact two-round VOLE (full version).
 - The paper's Sec. 4.1.4 describes a Schnorr-style threshold signature while Sec. 5 implements threshold ECDSA (DKLs23). Both are here.
 - drcf_demo's harness gives both processes the same seed (synthetic data) and simulates publishers and the subscriber inside B1's process. Brokers only feed their own shares into the protocols.

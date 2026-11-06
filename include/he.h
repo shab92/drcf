@@ -1,98 +1,120 @@
-// Encrypted cross-terms with Microsoft SEAL (BFV, batching), for DRCF.Compute linear models.
-// Each broker has its OWN BFV key pair (Sec. 4.1.3). For x = x1 + x2 and beta = beta1 + beta2 (mod t):
-//   sum_i beta_i x_i = <b1,x1> + <b2,x2> + <b2,x1> + <b1,x2>
-// The two cross terms go through HE:  B1 sends Enc_1(x1); B2 returns Enc_1(b2*x1 + rho); B1 decrypts.
-// Output: additive shares (mod t) of one inner product per group of `p` slots.
+// Joint evaluation with CKKS (Microsoft SEAL 4.1.2), following DRCF Sec. 4.1.3 and Sec. 5.
+//
+// Regression tasks hold real-valued additive shares X = X1 + X2 and beta = beta1 + beta2.
+// When joint computation is needed, each broker generates FRESH CKKS keys (short-term keys,
+// Sec. 4.1.1), encrypts its local share under its own key, and the brokers exchange encrypted
+// cross terms:
+//     B1:  C(1) = Enc(pk1, X1)  ->  B2 evaluates  C_T = C(1) * beta2 + delta   ->  B1
+//     B2:  C(2) = Enc(pk2, X2)  ->  B1 evaluates  C_T' = C(2) * beta1 + delta' ->  B2
+// and each broker outputs   Y(i) = Dec(sk_i, C_T) + delta_i   (local term minus its own mask),
+// so that Y(1) + Y(2) = <beta, X> per group (up to CKKS approximation error). Keys are erased after use.
 #pragma once
 #include <seal/seal.h>
+#include <chrono>
+#include <cmath>
+#include <random>
 #include <sstream>
 #include "emp-tool/emp-tool.h"
-#include "convert.h"
 
 namespace he {
 
-inline int last_budget = -1;   // noise budget (bits) left in the last decrypted cross term
+// CKKS parameters (128-bit security per SEAL's default tables for N = 8192).
+struct Params {
+    size_t N = 8192;
+    std::vector<int> bits = {60, 36, 60};   // q0 = 60 bits, one 36-bit rescale prime, special prime
+    double scale = std::pow(2.0, 36);
+    double mask_range = std::pow(2.0, 20);  // |delta| bound; values must stay below q0 / (2 scale) = 2^23
+};
 
-struct Party {
-    seal::EncryptionParameters parms{seal::scheme_type::bfv};
+struct Stats { size_t ct_bytes_out = 0, ct_bytes_in = 0, plain_bytes = 0; double keygen_ms = 0; int slots_used = 0; };
+inline Stats last;
+
+inline std::mt19937_64& rng() { static thread_local std::mt19937_64 g(std::random_device{}()); return g; }
+inline double uniform(double r) { std::uniform_real_distribution<double> d(-r, r); return d(rng()); }
+
+struct Session {   // one broker's short-term CKKS state for a single joint evaluation
+    seal::EncryptionParameters parms{seal::scheme_type::ckks};
     std::unique_ptr<seal::SEALContext> ctx;
     std::unique_ptr<seal::KeyGenerator> kg;
     seal::PublicKey pk;
     std::unique_ptr<seal::Encryptor> enc;
     std::unique_ptr<seal::Decryptor> dec;
     std::unique_ptr<seal::Evaluator> ev;
-    std::unique_ptr<seal::BatchEncoder> be;
-    uint64_t t;
-    size_t slots;
-    explicit Party(size_t N = 8192, int t_bits = 41) {
-        parms.set_poly_modulus_degree(N);
-        parms.set_coeff_modulus(seal::CoeffModulus::BFVDefault(N));
-        parms.set_plain_modulus(seal::PlainModulus::Batching(N, t_bits));
+    std::unique_ptr<seal::CKKSEncoder> ce;
+    Params P;
+    explicit Session(const Params& p) : P(p) {
+        parms.set_poly_modulus_degree(P.N);
+        parms.set_coeff_modulus(seal::CoeffModulus::Create(P.N, P.bits));
         ctx = std::make_unique<seal::SEALContext>(parms);
-        kg = std::make_unique<seal::KeyGenerator>(*ctx);
+        kg = std::make_unique<seal::KeyGenerator>(*ctx);          // fresh (sk_i, pk_i)
         kg->create_public_key(pk);
         enc = std::make_unique<seal::Encryptor>(*ctx, pk);
         dec = std::make_unique<seal::Decryptor>(*ctx, kg->secret_key());
         ev = std::make_unique<seal::Evaluator>(*ctx);
-        be = std::make_unique<seal::BatchEncoder>(*ctx);
-        t = parms.plain_modulus().value();
-        slots = be->slot_count();
+        ce = std::make_unique<seal::CKKSEncoder>(*ctx);
     }
+    size_t slots() const { return ce->slot_count(); }
 };
 
-inline void send_ct(emp::IOChannel* io, const seal::Ciphertext& c) {
+inline size_t send_ct(emp::IOChannel* io, const seal::Ciphertext& c) {
     std::stringstream ss; c.save(ss, seal::compr_mode_type::none);
     std::string s = ss.str(); uint64_t n = s.size();
     io->send_data(&n, 8); io->send_data(s.data(), n); io->flush();
+    return n;
 }
-inline seal::Ciphertext recv_ct(emp::IOChannel* io, const seal::SEALContext& ctx) {
+inline seal::Ciphertext recv_ct(emp::IOChannel* io, const seal::SEALContext& ctx, size_t& n_out) {
     uint64_t n; io->recv_data(&n, 8); std::string s(n, '\0'); io->recv_data(s.data(), n);
-    std::stringstream ss(s); seal::Ciphertext c; c.load(ctx, ss); return c;
+    std::stringstream ss(s); seal::Ciphertext c; c.load(ctx, ss); n_out = n; return c;
 }
 
-// key owner: encrypts own x, gets back masked cross term, returns sum per group
-inline std::vector<uint64_t> cross_owner(Party& P, emp::IOChannel* io, const std::vector<uint64_t>& x, size_t p) {
-    std::vector<uint64_t> v(P.slots, 0); std::copy(x.begin(), x.end(), v.begin());
-    seal::Plaintext pt; P.be->encode(v, pt);
-    seal::Ciphertext ct; P.enc->encrypt(pt, ct);
-    send_ct(io, ct);
-    seal::Ciphertext back = recv_ct(io, *P.ctx);
-    last_budget = P.dec->invariant_noise_budget(back);
-    seal::Plaintext out; P.dec->decrypt(back, out);
-    std::vector<uint64_t> r; P.be->decode(out, r);
-    std::vector<uint64_t> g(x.size() / p, 0);
-    for (size_t i = 0; i < x.size(); i++) g[i / p] = (g[i / p] + r[i]) % P.t;
+// key owner: C(i) = Enc(pk_i, X_i) -> peer; receives C_T; returns Dec(sk_i, C_T) summed per group of p slots
+inline std::vector<double> owner(Session& S, emp::IOChannel* io, const std::vector<double>& x, size_t p) {
+    std::vector<double> v(S.slots(), 0.0); std::copy(x.begin(), x.end(), v.begin());
+    seal::Plaintext pt; S.ce->encode(v, S.P.scale, pt);
+    seal::Ciphertext ct; S.enc->encrypt(pt, ct);
+    last.ct_bytes_out += send_ct(io, ct);
+    size_t n; seal::Ciphertext back = recv_ct(io, *S.ctx, n); last.ct_bytes_in += n;
+    seal::Plaintext out; S.dec->decrypt(back, out);
+    std::vector<double> r; S.ce->decode(out, r);
+    std::vector<double> g(x.size() / p, 0.0);
+    for (size_t i = 0; i < x.size(); i++) g[i / p] += r[i];
     return g;
 }
-// helper: multiplies the other party's ciphertext by own beta, adds a fresh mask, returns -sum(mask) per group
-inline std::vector<uint64_t> cross_helper(Party& P, emp::IOChannel* io, const std::vector<uint64_t>& beta, size_t p) {
-    seal::Ciphertext ct = recv_ct(io, *P.ctx);
-    std::vector<uint64_t> b(P.slots, 0), rho(P.slots, 0);
+// evaluator: C_T = C(j) * beta_i + delta, sent back; returns -sum(delta) per group
+inline std::vector<double> evaluator(Session& S, emp::IOChannel* io, const std::vector<double>& beta, size_t p) {
+    size_t n; seal::Ciphertext ct = recv_ct(io, *S.ctx, n); last.ct_bytes_in += n;
+    std::vector<double> b(S.slots(), 0.0), d(S.slots(), 0.0);
     std::copy(beta.begin(), beta.end(), b.begin());
-    for (size_t i = 0; i < beta.size(); i++) rho[i] = convert::rand_mod(P.t);
-    seal::Plaintext pb, pr; P.be->encode(b, pb); P.be->encode(rho, pr);
-    P.ev->multiply_plain_inplace(ct, pb);
-    P.ev->add_plain_inplace(ct, pr);
-    P.ev->mod_switch_to_next_inplace(ct);   // drop one prime: smaller reply, budget still positive
-    send_ct(io, ct);
-    std::vector<uint64_t> g(beta.size() / p, 0);
-    for (size_t i = 0; i < beta.size(); i++) g[i / p] = (g[i / p] + P.t - rho[i]) % P.t;
+    for (size_t i = 0; i < beta.size(); i++) d[i] = uniform(S.P.mask_range);
+    seal::Plaintext pb, pd;
+    S.ce->encode(b, S.P.scale, pb);
+    S.ev->multiply_plain_inplace(ct, pb);
+    S.ev->rescale_to_next_inplace(ct);
+    S.ce->encode(d, ct.parms_id(), ct.scale(), pd);
+    S.ev->add_plain_inplace(ct, pd);
+    last.ct_bytes_out += send_ct(io, ct);
+    std::vector<double> g(beta.size() / p, 0.0);
+    for (size_t i = 0; i < beta.size(); i++) g[i / p] -= d[i];
     return g;
 }
 
-// Both brokers call this with their own shares of x and beta (same length n = groups * p).
-// Returns this broker's additive share of <beta_g, x_g> for every group g.
-inline std::vector<uint64_t> inner_products(Party& P, emp::IOChannel* io, int party, const std::vector<uint64_t>& x,
-                                            const std::vector<uint64_t>& beta, size_t p) {
-    if (x.size() > P.slots) throw std::invalid_argument("too many slots");
-    const uint64_t t = P.t;
-    std::vector<uint64_t> share(x.size() / p, 0);
-    for (size_t i = 0; i < x.size(); i++) share[i / p] = (share[i / p] + convert::mulmod(x[i], beta[i], t)) % t;  // local term
-    std::vector<uint64_t> a, b;
-    if (party == emp::ALICE) { a = cross_owner(P, io, x, p); b = cross_helper(P, io, beta, p); }    // b2*x1 via B1 key, b1*x2 via B2 key
-    else { a = cross_helper(P, io, beta, p); b = cross_owner(P, io, x, p); }
-    for (size_t g = 0; g < share.size(); g++) share[g] = (share[g] + a[g] + b[g]) % t;
-    return share;
+// Both brokers call this with their own real-valued shares of X and beta (n = groups * p).
+// Returns Y(i): this broker's additive share of <beta_g, X_g> for every group g.
+inline std::vector<double> inner_products(emp::IOChannel* io, int party, const std::vector<double>& x,
+                                          const std::vector<double>& beta, size_t p, const Params& P = Params()) {
+    last = Stats{};
+    auto t0 = std::chrono::steady_clock::now();
+    Session S(P);                                             // fresh short-term keys for this evaluation
+    last.keygen_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (x.size() > S.slots()) throw std::invalid_argument("too many slots");
+    last.slots_used = (int)x.size(); last.plain_bytes = x.size() * sizeof(double);
+    std::vector<double> y(x.size() / p, 0.0);
+    for (size_t i = 0; i < x.size(); i++) y[i / p] += x[i] * beta[i];               // local term
+    std::vector<double> a, b;
+    if (party == emp::ALICE) { a = owner(S, io, x, p); b = evaluator(S, io, beta, p); }
+    else { a = evaluator(S, io, beta, p); b = owner(S, io, x, p); }
+    for (size_t g = 0; g < y.size(); g++) y[g] += a[g] + b[g];
+    return y;                                                  // S (and sk_i) destroyed here
 }
 
 }  // namespace he
