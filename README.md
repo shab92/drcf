@@ -63,6 +63,39 @@ cd build && ../run.sh ./drcf_demo     # full pipeline, writes trace.js
 
 On two machines, set `EMP_PEER_IP` and `EMP_PORT`, then start party 1 and party 2 separately.
 
+## IoT protocols (Table A1)
+
+Each protocol of the paper's Table A1 is implemented with the model from the paper it cites, on the same dataset (paper Table 3). A Python script builds the plaintext model and the public inputs; a C++ program runs the protocol between the two brokers and checks the result.
+
+| Protocol | Task | Model (paper) | Dataset | Status |
+|---|---|---|---|---|
+| II | Anomaly detection, ML | Prophet as configured by Jaiswal et al. 2021 | Ausgrid, 10 customers (Jaiswal) | done |
+| I, III, IV, V, VI | | PARX, ARIMA, RBF-SVR, ARIMA, SVR+ARIMA | | in progress |
+
+**Protocol II** (`iot/p2_prophet_prep.py`, `iot/protocol2.cpp`). Prophet's configuration from the authors' notebook: piecewise-linear trend with 25 changepoints, daily (order 4) and yearly (order 10) seasonality, weekday/weekend weekly seasonality (order 3), Australian holidays, 99% interval; an anomaly is a reading outside the interval or equal to 0. With Gaussian priors the fit is linear in the readings (w = A·y with A public), so each broker fits on its share locally; the squared residuals need the cross term r1·r2, computed with CKKS; the decision runs in a garbled circuit. Every reading goes through DistAEAD first.
+
+```sh
+python3 iot/p2_prophet_prep.py "<path to Anomaly labelled dataset.csv>" 7,29,30,64,155,160,184,202,206,215
+./run.sh build/protocol2 iot/data/p2_c7
+```
+
+Results (35,088 half-hourly readings per customer, two years):
+
+| Customer | secure = plaintext model | agreement with the paper's labels | precision | recall | time (incl. DistAEAD) |
+|---|---|---|---|---|---|
+| 7 | 35,088 / 35,088 | 99.73% | 0.967 | 0.956 | 55 s |
+| 29 | 35,088 / 35,088 | 98.74% | 0.845 | 0.755 | 62 s |
+| 30 | 35,088 / 35,088 | 99.73% | 0.968 | 0.938 | 64 s |
+| 64 | 35,088 / 35,088 | 98.92% | 0.873 | 0.850 | 63 s |
+| 155 | 35,088 / 35,088 | 99.69% | 0.970 | 0.936 | 62 s |
+| 160 | 35,088 / 35,088 | 99.62% | 0.945 | 0.925 | 64 s |
+| 184 | 35,088 / 35,088 | 98.92% | 0.889 | 0.820 | 65 s |
+| 202 | 35,088 / 35,088 | 99.10% | 0.916 | 0.829 | 62 s |
+| 206 | 35,088 / 35,088 | 99.68% | 0.977 | 0.918 | 63 s |
+| 215 | 35,088 / 35,088 | 99.40% | 0.951 | 0.891 | 62 s |
+
+The remaining gap to the paper's labels comes from Prophet's per-customer tuned hyperparameters, which were not published (defaults are used here), and from replacing Prophet's Laplace changepoint prior by a Gaussian. Without DistAEAD the protocol takes about 6 s per customer; CKKS error on r² is about 0.002 Wh².
+
 ## Dashboard
 
 `docs/index.html` replays a recorded `drcf_demo` run in the browser: the protocol flow between publishers, B1, B2 and the subscriber; what each broker sees at every step (the page XORs the two shares to show they recover the real reading); attack scenarios (tampered publication, tampered result, a compromised broker); forecasts and alerts per meter; and the cost of each step. It is a single file with no server and opens offline.

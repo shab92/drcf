@@ -58,4 +58,20 @@ inline std::vector<uint8_t> threshold(emp::SH2PCSession& s, const std::vector<in
     return out;
 }
 
+// Protocol II decision: [ a > b ] OR [ y == 0 ], all three as additive int64 shares. Output XOR-shared.
+inline std::vector<uint8_t> greater_or_zero(emp::SH2PCSession& s, const std::vector<int64_t>& a, const std::vector<int64_t>& b,
+                                            const std::vector<int64_t>& y) {
+    auto& c = s.ctx();
+    U64 Z = U64::constant(c, 0);
+    std::vector<uint8_t> out(a.size());
+    for (size_t i = 0; i < a.size(); i++) {
+        U64 A = s.input<U64>(emp::ALICE, (uint64_t)a[i]) + s.input<U64>(emp::BOB, (uint64_t)a[i]);
+        U64 B = s.input<U64>(emp::ALICE, (uint64_t)b[i]) + s.input<U64>(emp::BOB, (uint64_t)b[i]);
+        U64 Y = s.input<U64>(emp::ALICE, (uint64_t)y[i]) + s.input<U64>(emp::BOB, (uint64_t)y[i]);
+        U64 d = B - A;                                             // a > b  <=>  b - a < 0
+        out[i] = *s.reveal(d[63] | (Y == Z), emp::XOR);
+    }
+    return out;
+}
+
 }  // namespace convert

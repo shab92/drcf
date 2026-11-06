@@ -119,4 +119,23 @@ inline std::vector<double> inner_products(emp::IOChannel* io, int party, const s
     return y;                                                  // S (and sk_i) destroyed here
 }
 
+// Element-wise products of two shared vectors, any length: chunks of one ciphertext each,
+// fresh keys per chunk. Returns this broker's share of x[i] * y[i].
+inline std::vector<double> products(emp::IOChannel* io, int party, const std::vector<double>& x, const std::vector<double>& y,
+                                    const Params& P = Params()) {
+    std::vector<double> out; out.reserve(x.size());
+    Stats acc{};
+    const size_t chunk = P.N / 2;
+    for (size_t off = 0; off < x.size(); off += chunk) {
+        size_t n = std::min(chunk, x.size() - off);
+        std::vector<double> a(x.begin() + off, x.begin() + off + n), b(y.begin() + off, y.begin() + off + n);
+        auto r = inner_products(io, party, a, b, 1, P);
+        out.insert(out.end(), r.begin(), r.end());
+        acc.ct_bytes_out += last.ct_bytes_out; acc.ct_bytes_in += last.ct_bytes_in; acc.keygen_ms += last.keygen_ms;
+        acc.fresh_ct_bytes = last.fresh_ct_bytes; acc.slots = last.slots; acc.plain_bytes += last.plain_bytes; acc.slots_used += last.slots_used;
+    }
+    last = acc;
+    return out;
+}
+
 }  // namespace he
