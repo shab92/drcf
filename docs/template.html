@@ -44,7 +44,7 @@ header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 14
 .pill { display: inline-flex; gap: 6px; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 13px; border: 1px solid var(--line); background: var(--panel); white-space: nowrap; }
 .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
 .pill.bad::before { background: var(--bad); }
-.grid2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; align-items: start; }
 @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
 svg text { font-family: var(--body); fill: var(--ink); }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
@@ -54,7 +54,7 @@ button.primary { background: var(--accent); color: #fff; border-color: var(--acc
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
 .toggle input { accent-color: var(--bad); }
-.steps { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; max-height: 330px; overflow-y: auto; }
+.steps { display: grid; gap: 2px; margin: 10px 0 0; padding: 0; list-style: none; max-height: 330px; overflow-y: auto; }
 .steps li button { width: 100%; text-align: left; display: grid; grid-template-columns: 80px 1fr auto; gap: 8px; background: transparent; border: 0; border-left: 3px solid transparent; border-radius: 0; padding: 5px 8px; }
 .steps li button[aria-current="step"] { background: var(--soft); border-left-color: var(--accent); }
 .steps .ph { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding-top: 2px; }
@@ -88,22 +88,80 @@ td.n, th.n { text-align: right; }
 .res div.al { border-color: var(--bad); box-shadow: inset 3px 0 0 var(--bad); }
 .res small { color: var(--muted); display: block; }
 footer { color: var(--muted); font-size: 13px; }
+
+/* ---- layout v2: sticky bar, stat tiles, collapsible cards ---- */
+body { background: radial-gradient(1200px 500px at 10% -10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 60%), var(--bg); background-attachment: fixed; }
+.topbar { position: sticky; top: 0; z-index: 20; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--bg) 82%, transparent); border-bottom: 1px solid var(--line); }
+.topbar .in { max-width: 1240px; margin: 0 auto; padding: 8px 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.brand { font: 600 16px var(--display); letter-spacing: .04em; display: flex; align-items: center; gap: 8px; }
+.brand i { width: 10px; height: 10px; border-radius: 3px; background: linear-gradient(135deg, var(--b1), var(--b2)); display: inline-block; }
+.nav { display: flex; gap: 2px; flex-wrap: wrap; flex: 1; }
+.nav a { color: var(--muted); text-decoration: none; font-size: 13.5px; padding: 4px 10px; border-radius: 999px; }
+.nav a:hover, .nav a.on { color: var(--ink); background: var(--soft); }
+.tools { display: flex; gap: 6px; }
+.tools button { font-size: 13px; padding: 4px 10px; }
+.hero { padding: 26px 24px; border-radius: 14px; border: 1px solid var(--line);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--b1) 12%, var(--panel)), color-mix(in srgb, var(--b2) 10%, var(--panel))); }
+.hero h1 { font-size: 32px; }
+.hero .checks { margin-top: 14px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 2px rgb(0 0 0 / .04); }
+.tile .lbl { color: var(--muted); font-size: 12.5px; text-transform: uppercase; letter-spacing: .05em; }
+.tile .num { font: 600 26px/1.15 var(--display); font-variant-numeric: tabular-nums; margin-top: 4px; }
+.tile .num small { font: 500 14px var(--body); color: var(--muted); margin-left: 3px; }
+.tile .hint { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+details.panel { padding: 0; border-radius: 12px; box-shadow: 0 1px 3px rgb(0 0 0 / .05); transition: box-shadow .2s; scroll-margin-top: 64px; }
+details.panel:hover { box-shadow: 0 4px 14px rgb(0 0 0 / .07); }
+details.panel > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 14px 16px; user-select: none; border-radius: 12px; }
+details.panel > summary::-webkit-details-marker { display: none; }
+details.panel > summary h2 { margin: 0; flex: 1; }
+details.panel > summary .tag { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+details.panel > summary::after { content: ""; width: 9px; height: 9px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); transition: transform .2s; margin: 0 4px 4px 0; }
+details.panel:not([open]) > summary::after { transform: rotate(-45deg); margin-bottom: 0; }
+details.panel > summary:hover h2 { color: var(--ink); }
+details.panel[open] > summary { border-bottom: 1px solid var(--line); border-radius: 12px 12px 0 0; }
+details.panel > .body { padding: 14px 16px 16px; animation: fade .25s ease; }
+@keyframes fade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.inspect h3 { margin-top: 0; }
+.sub2 { margin-top: 16px; border-top: 1px dashed var(--line); padding-top: 10px; }
+.sub2 > summary { cursor: pointer; color: var(--muted); font: 600 14px var(--display); text-transform: uppercase; letter-spacing: .04em; }
+.proto { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.proto details { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--soft); }
+.proto summary { cursor: pointer; font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+.proto summary b { font: 600 13px var(--mono); color: var(--accent); }
+.proto p { margin: 8px 0 0; font-size: 13.5px; color: var(--muted); }
+.proto code { display: block; margin-top: 8px; font: 12px var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; overflow-x: auto; white-space: nowrap; color: var(--ink); }
+.btn-copy { font-size: 12px; padding: 2px 8px; margin-top: 6px; }
+@media print { .topbar { display: none; } details.panel > .body { display: block !important; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
+<nav class="topbar" aria-label="Sections"><div class="in">
+  <span class="brand"><i></i>DRCF</span>
+  <div class="nav">
+    <a href="#flow">Flow</a><a href="#step">Current step</a><a href="#data">Data</a><a href="#subscriber">Subscriber</a><a href="#cost">Cost</a><a href="#protocols">Protocols</a>
+  </div>
+  <div class="tools">
+    <button id="openAll" type="button">Expand all</button><button id="closeAll" type="button">Collapse all</button><button id="theme" type="button">Dark / light</button>
+  </div>
+</div></nav>
 <div class="wrap">
-  <header>
+  <header class="hero">
     <div>
       <h1>DRCF: two brokers, no single point of trust</h1>
-      <p class="sub">A replay of one real run of the DRCF pipeline. Both brokers ran as separate C++ processes: ASCON-128 inside garbled circuits (EMP), CKKS cross terms (SEAL 4.1.2), 2-party threshold ECDSA following Doerner et al. (S&P 2024) and 2-party Schnorr on secp256k1. Every share, ciphertext, timing and byte count below comes from that run.</p>
+      <p class="sub">A replay of one real run of the DRCF pipeline. Both brokers ran as separate C++ processes: ASCON-128 inside garbled circuits (EMP), CKKS cross terms (SEAL 4.1.2), 2-party threshold ECDSA following Doerner et al. (S&amp;P 2024) and 2-party Schnorr on secp256k1. Every share, ciphertext, timing and byte count below comes from that run.</p>
+      <div class="checks" id="checks"></div>
     </div>
-    <div class="checks" id="checks"></div>
   </header>
 
+  <div class="tiles" id="tiles"></div>
+
   <div class="grid2">
-    <section class="panel" aria-labelledby="topo-h">
-      <h2 id="topo-h">Protocol flow</h2>
+    <details class="panel" id="flow" open>
+      <summary><h2>Protocol flow</h2><span class="tag">Play to animate</span></summary>
+      <div class="body">
       <svg id="topo" viewBox="0 0 760 380" role="img" aria-label="Publishers send to brokers B1 and B2, which compute jointly and deliver to the subscriber"></svg>
       <div class="controls">
         <button class="primary" id="play" type="button">Play</button>
@@ -117,10 +175,13 @@ footer { color: var(--muted); font-size: 13px; }
         <label class="toggle" for="atkB1"><input type="checkbox" id="atkB1"> Attacker controls B1</label>
       </div>
       <p class="note" id="atkNote"></p>
-    </section>
+    
+      </div>
+    </details>
 
-    <section class="panel inspect" aria-live="polite">
-      <h2>Current step</h2>
+    <details class="panel inspect" id="step" open aria-live="polite">
+      <summary><h2>Current step</h2></summary>
+      <div class="body">
       <h3 id="sName"></h3>
       <div class="kv"><span>Phase <b id="sPhase"></b></span><span>Time <b id="sMs"></b></span><span>Traffic <b id="sBytes"></b></span><span>AND gates <b id="sAnd"></b></span></div>
       <p id="sWhat" style="margin:0 0 12px"></p>
@@ -129,38 +190,66 @@ footer { color: var(--muted); font-size: 13px; }
         <div class="view b2" id="v2"><div class="who" style="color:var(--b2)">What B2 sees</div><div class="val mono" id="sB2"></div></div>
       </div>
       <div class="recon" id="recon"></div>
-      <h2 style="margin-top:16px">All steps</h2>
-      <ol class="steps" id="steps"></ol>
-    </section>
+      <details class="sub2" open><summary>All steps</summary>
+        <ol class="steps" id="steps"></ol>
+      </details>
+    
+      </div>
+    </details>
   </div>
 
-  <section class="panel" aria-labelledby="ch-h">
+  <details class="panel" id="data" open>
+      <summary><h2>Smart-meter load and the jointly computed forecast</h2><span class="tag">7 days</span></summary>
+      <div class="body">
     <div class="chartbar">
-      <h2 id="ch-h" style="margin:0">Smart-meter load and the jointly computed forecast</h2>
+      <span class="note" style="margin:0">Each broker only ever holds random-looking shares; the line is what the subscriber reconstructs.</span>
       <label for="meter" style="font-size:14px">Meter <select id="meter"></select></label>
     </div>
     <div class="legend"><span class="lg-read">Reading (Wh)</span><span class="lg-fc">AR forecast from shares</span><span class="lg-al">Alert raised in GC</span><span class="lg-sp">Injected spike</span></div>
     <svg id="chart" viewBox="0 0 1180 300" role="img" aria-label="Hourly readings and forecast over 7 days"></svg>
     <p class="note" id="chartNote"></p>
-  </section>
+  
+      </div>
+    </details>
 
   <div class="grid2">
-    <section class="panel" aria-labelledby="sub-h">
-      <h2 id="sub-h">What the subscriber receives</h2>
+    <details class="panel" id="subscriber" open>
+      <summary><h2>What the subscriber receives</h2><span class="tag">signed</span></summary>
+      <div class="body">
       <p class="note" style="margin-top:0" id="subReq"></p>
       <div class="res" id="res"></div>
       <div class="tablewrap" style="margin-top:12px"><table><tbody id="sigs"></tbody></table></div>
-    </section>
-    <section class="panel" aria-labelledby="cost-h">
-      <h2 id="cost-h">Cost per step</h2>
+    
+      </div>
+    </details>
+    <details class="panel" id="cost" open>
+      <summary><h2>Cost per step</h2><span class="tag">localhost</span></summary>
+      <div class="body">
       <div class="tablewrap"><table>
         <thead><tr><th>Step</th><th class="n">ms</th><th class="n">KiB</th><th class="n">AND gates</th><th style="width:28%">share of time</th></tr></thead>
         <tbody id="costs"></tbody>
       </table></div>
       <p class="note">Localhost, 2 cores, semi-honest setting as in the paper. Traffic counts both directions between B1 and B2.</p>
       <p class="note" id="ckksNote"></p>
-    </section>
+    
+      </div>
+    </details>
   </div>
+
+  <details class="panel" id="protocols" open>
+      <summary><h2>Try the Table A1 protocols on your data</h2><span class="tag">drcf.py</span></summary>
+      <div class="body">
+        <p class="note" style="margin-top:0">The six IoT protocols of Table A1, each with the model of the paper it cites. Run any of them on your own CSV:</p>
+        <div class="proto">
+          <details><summary><b>I</b>Anomaly detection</summary><p><b style="color:var(--ink)">PARX (Ardakanian et al. 2014).</b> One OLS model per hour and day type, previous 3 days as lags, temperature terms; flag if |y − ŷ| > 3σ. CKKS + garbled-circuit decision.</p><code>python3 drcf.py --protocol 1 --data meter.csv --time ts --value kwh --temp temperature</code><button class="btn-copy" type="button" data-copy="python3 drcf.py --protocol 1 --data meter.csv --time ts --value kwh --temp temperature">Copy</button></details>
+          <details><summary><b>II</b>Anomaly detection</summary><p><b style="color:var(--ink)">Prophet (Jaiswal et al. 2021).</b> Trend + daily, yearly, weekday/weekend seasonality fitted on each share; 99% interval; zero readings flagged.</p><code>python3 drcf.py --protocol 2 --data meter.csv --time ts --value kwh</code><button class="btn-copy" type="button" data-copy="python3 drcf.py --protocol 2 --data meter.csv --time ts --value kwh">Copy</button></details>
+          <details><summary><b>III</b>Load forecasting</summary><p><b style="color:var(--ink)">SWHSA (Alberg & Last 2018).</b> SARIMA(0,0,1)(0,1,1)24 on a 96-day sliding window, 24 h ahead, drift-triggered refit. Linear predictors in CKKS.</p><code>python3 drcf.py --protocol 3 --data load.csv --time ts --value kw</code><button class="btn-copy" type="button" data-copy="python3 drcf.py --protocol 3 --data load.csv --time ts --value kw">Copy</button></details>
+          <details><summary><b>IV</b>Load forecasting</summary><p><b style="color:var(--ink)">RBF SVR (Chen, Chang & Lin 2004).</b> Daily peak, 31 days ahead recursively; 7 previous peaks + calendar bits. Peaks and SVR in a garbled circuit.</p><code>python3 drcf.py --protocol 4 --data load.csv --time ts --value kw --series client</code><button class="btn-copy" type="button" data-copy="python3 drcf.py --protocol 4 --data load.csv --time ts --value kw --series client">Copy</button></details>
+          <details><summary><b>V</b>Price forecasting</summary><p><b style="color:var(--ink)">ARIMA (Contreras et al. 2003).</b> Multiplicative ARIMA on log prices (Eq. 3), 24 h ahead each day. Linear predictors in CKKS.</p><code>python3 drcf.py --protocol 5 --data price.csv --time ts --value price</code><button class="btn-copy" type="button" data-copy="python3 drcf.py --protocol 5 --data price.csv --time ts --value price">Copy</button></details>
+          <details><summary><b>VI</b>Price forecasting</summary><p><b style="color:var(--ink)">SVRARIMA (Che & Wang 2010).</b> RBF SVR on lags 1–3 in a garbled circuit, ARIMA on its residuals in CKKS, one hour ahead.</p><code>python3 drcf.py --protocol 6 --data price.csv --time ts --value price</code><button class="btn-copy" type="button" data-copy="python3 drcf.py --protocol 6 --data price.csv --time ts --value price">Copy</button></details>
+        </div>
+      </div>
+    </details>
 
   <footer id="foot"></footer>
 </div>
@@ -382,6 +471,38 @@ $("costs").innerHTML = steps.map(s => `<tr><td>${s.name}</td><td class="n">${fmt
 
 $("ckksNote").textContent = `CKKS storage (Table 6 of the paper): a fresh ciphertext holding ${T.ckks.fullSlots} values is ${(T.ckks.freshCt/1024).toFixed(0)} KiB, ${(T.ckks.freshCt/(T.ckks.fullSlots*8)).toFixed(2)}× the plaintext (paper: 6.02 to 6.09×). Fresh keys per broker took ${T.ckks.keygenMs.toFixed(0)} ms.`;
 $("foot").textContent = `Run parameters: ${P.meters} meters × ${P.hours} h, ${P.cipher}, ${P.he}, ${P.curve}, AR coefficients [${P.beta.map(b => b.toFixed(4)).join(", ")}], alert threshold ${P.alertWh} Wh. Synthetic load data. Semi-honest model, demo-grade code.`;
+
+// ---------- layout v2: tiles, expand/collapse, theme, nav, copy ----------
+(() => {
+  const tb = steps.reduce((a, s) => a + s.bytes, 0), ta = steps.reduce((a, s) => a + s.ands, 0);
+  const cc = T.checks;
+  const tiles = [
+    ["End-to-end time", fmt(totalMs / 1000, 2), "s", `${steps.length} protocol steps`],
+    ["Broker traffic", fmt(tb / 1048576, 1), "MiB", "both directions"],
+    ["AND gates", fmt(ta / 1e6, 1), "M", "garbled circuits"],
+    ["Readings authenticated", `${cc.tagsValid}`, `/ ${cc.readings}`, "DistAEAD tags in GC"],
+    ["CKKS max error", fmt(T.ckks.maxErrWh, 4), "Wh", "forecast vs plaintext"],
+  ];
+  $("tiles").innerHTML = tiles.map(([l, n, u, h]) => `<div class="tile"><div class="lbl">${l}</div><div class="num">${n}<small>${u}</small></div><div class="hint">${h}</div></div>`).join("");
+  const all = () => document.querySelectorAll("details.panel, details.sub2");
+  $("openAll").onclick = () => all().forEach(d => d.open = true);
+  $("closeAll").onclick = () => all().forEach(d => d.open = false);
+  const root = document.documentElement;
+  try { const t = localStorage.getItem("drcf-theme"); if (t) root.dataset.theme = t; } catch (e) {}
+  $("theme").onclick = () => {
+    const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    root.dataset.theme = dark ? "light" : "dark";
+    try { localStorage.setItem("drcf-theme", root.dataset.theme); } catch (e) {}
+  };
+  document.querySelectorAll(".nav a").forEach(a => a.addEventListener("click", () => { const d = document.querySelector(a.getAttribute("href")); if (d) d.open = true; }));
+  const links = [...document.querySelectorAll(".nav a")];
+  const obs = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) links.forEach(l => l.classList.toggle("on", l.getAttribute("href") === "#" + e.target.id)); }), { rootMargin: "-40% 0px -55% 0px" });
+  links.forEach(l => { const t = document.querySelector(l.getAttribute("href")); if (t) obs.observe(t); });
+  document.querySelectorAll(".btn-copy").forEach(b => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "Copied"; } catch (e) { b.textContent = "Select and copy"; }
+    setTimeout(() => b.textContent = "Copy", 1500);
+  });
+})();
 
 syncAtk();
 })();
