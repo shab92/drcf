@@ -69,8 +69,12 @@ Each protocol of the paper's Table A1 is implemented with the model from the pap
 
 | Protocol | Task | Model (paper) | Dataset | Status |
 |---|---|---|---|---|
+| I | Anomaly detection, regression | PARX (Ardakanian et al. 2014) | synthetic smart meter (Liu) | waiting for the paper's synthetic dataset |
 | II | Anomaly detection, ML | Prophet as configured by Jaiswal et al. 2021 | Ausgrid, 10 customers (Jaiswal) | done |
-| I, III, IV, V, VI | | PARX, ARIMA, RBF-SVR, ARIMA, SVR+ARIMA | | in progress |
+| III | Load forecasting, regression | sliding-window (S)ARIMA (Alberg & Last 2018) | UCI household power | in progress |
+| IV | Load forecasting, ML | RBF SVR (Chen, Chang & Lin 2004) | UCI ElectricityLoadDiagrams | in progress |
+| V | Price forecasting, regression | ARIMA (Contreras et al. 2003) | electricity price (Kaggle) | waiting for the dataset |
+| VI | Price forecasting, ML | SVRARIMA (Che & Wang 2010) | Polish day-ahead market | done |
 
 **Protocol II** (`iot/p2_prophet_prep.py`, `iot/protocol2.cpp`). Prophet's configuration from the authors' notebook: piecewise-linear trend with 25 changepoints, daily (order 4) and yearly (order 10) seasonality, weekday/weekend weekly seasonality (order 3), Australian holidays, 99% interval; an anomaly is a reading outside the interval or equal to 0. With Gaussian priors the fit is linear in the readings (w = A·y with A public), so each broker fits on its share locally; the squared residuals need the cross term r1·r2, computed with CKKS; the decision runs in a garbled circuit. Every reading goes through DistAEAD first.
 
@@ -95,6 +99,37 @@ Results (35,088 half-hourly readings per customer, two years):
 | 215 | 35,088 / 35,088 | 99.40% | 0.951 | 0.891 | 62 s |
 
 The remaining gap to the paper's labels comes from Prophet's per-customer tuned hyperparameters, which were not published (defaults are used here), and from replacing Prophet's Laplace changepoint prior by a Gaussian. Without DistAEAD the protocol takes about 6 s per customer; CKKS error on r² is about 0.002 Wh².
+
+Interval width: the code uses Prophet's 99% interval (z = 2.576, `Z` in `iot/p2_prophet_prep.py`), as Jaiswal et al. did. Table A1 of the DRCF paper writes the bound as 3σ; with z = 3 the protocol flags fewer readings and recall against the published labels drops to about 0.68 (precision about 0.98).
+
+**Protocol VI** (Che & Wang, 2010, on the Polish day-ahead market).
+
+`src/protocol6_polish.cpp`, garbled-circuit SVR in `include/svr_gc.h`, model owner in `scripts/train_protocol6.py`.
+
+SVRARIMA as in the paper: min-max normalisation on the training window (Eq. 3.1); SVR on the phase-space reconstruction with m = 3, τ = 1 (Eq. 2.1–2.3); RBF kernel exp(−‖x − x′‖²/2δ²) with C = 1, δ = 20, ε = 0.001 (Figs. 4, 7); ARIMA on the SVR residuals with p = (24), d = (0), q = (1) for February weeks and p = (1, 24), d = (24), q = (1) for April weeks; training on the 7 days before each forecast week; one-hour-ahead forecasts; RMSE and MAPE. Test weeks are the paper's calendar weeks (Feb 26 – Mar 3, Apr 1 – 7) in 2018, 2019 and 2020.
+
+The model owner trains in the clear and secret-shares the model (Table A1 input β). Secure flow on shared prices:
+1. Garbled circuit: normalisation, then N_t = b + Σ α_k exp(−γ‖x_t − sv_k‖²) with support vectors, α and b all secret. exp is fixed point: 2^−y with y split into integer and fraction, a degree-4 polynomial for the fraction (error 3.5e-6) and a secret shift for the integer part. Residuals e_t = x_t − N_t leave the circuit as additive shares.
+2. CKKS cross terms: the ARIMA one-step forecast of the residual, written as its linear predictor Σ w_j e_{t−j} (AR(∞) form truncated at 144 lags).
+3. Garbled circuit: forecast = (N_t + L_t)·range + min, output as additive shares.
+
+```sh
+python3 scripts/train_protocol6.py <polish repo>/data/data.xlsx build
+cd build && ../run.sh ./protocol6_polish prices_p6.txt model_p6.txt reference_p6.txt
+```
+
+| week | MAPE, secure | MAPE, plaintext reference | SVR alone (plaintext) | max \|secure − reference\| |
+|---|---|---|---|---|
+| 2018-02-26 | 12.10% | 12.11% | 18.24% | 0.26 PLN |
+| 2019-02-26 | 5.94% | 5.96% | 14.31% | 0.24 PLN |
+| 2020-02-26 | 11.41% | 11.41% | 21.61% | 0.35 PLN |
+| 2018-04-01 | 7.35% | 7.35% | 26.87% | 0.30 PLN |
+| 2019-04-01 | 3.55% | 3.54% | 10.54% | 0.37 PLN |
+| 2020-04-01 | 5.18% | 5.18% | 17.10% | 0.38 PLN |
+
+As in the paper, the hybrid beats SVR alone every week. Cost per week (168 forecasts, 164 support vectors): about 13 s, 360 M AND gates and 11 GB of localhost traffic, almost all of it the 27,500 kernel evaluations in the garbled circuit.
+
+
 
 ## Dashboard
 
@@ -146,62 +181,6 @@ Example runs (localhost):
 | Ausgrid customer 7, last 17,520 points | anomaly, `linear` lags 1,2,48,336 + hour, weekday | F1 0.507 vs labels | 99.99% of flags | 1.1 s, 254 MiB |
 
 Cost guide: `linear` and `prophet` take seconds for tens of thousands of points. `svr` costs about 2,100 AND gates per test point × support vector, so keep that product around 30,000 or below.
-
-## Applications (Table A1 of the paper)
-
-Each protocol follows the corresponding row of Table A1 and implements the model as specified in the paper it is based on. Datasets are listed in [data/README.md](data/README.md).
-
-### Protocol II: ML anomaly detection on Ausgrid (Jaiswal et al., AICCC 2021)
-
-`src/protocol2_ausgrid.cpp`, model in `include/prophet_lite.h`.
-
-The model is configured as in the authors' published notebook: Prophet's additive model with a piecewise-linear trend (25 changepoints in the first 80% of the history), daily seasonality (order 4), yearly seasonality (order 10), separate weekday and weekend weekly seasonalities (order 3 each), Australian public holidays, and an anomaly whenever a reading lies outside the interval or equals 0. The fit is a MAP estimate with Prophet's default prior scales; the Laplace prior on changepoint deltas is replaced by a Gaussian with the same scale, which makes the fit linear in the data.
-
-Secure flow (B1, B2 hold additive shares of the readings):
-1. Each broker fits the model to its own share locally (linear, exact): θ_i = G⁻¹Aᵀy_i, ŷ_i = Aθ_i.
-2. The residual variance needs Σ(e₁ + e₂)², obtained with CKKS cross terms.
-3. In a garbled circuit: σ = isqrt(variance), bound = k·σ, and for every reading r = [|y − ŷ| > bound or y = 0]. Outputs stay XOR-shared.
-
-```sh
-./run.sh build/protocol2_ausgrid "Anomaly labelled dataset.csv" all      # k = 3 as in Table A1
-./run.sh build/protocol2_ausgrid "Anomaly labelled dataset.csv" all 2.576   # Prophet's 99% interval
-```
-
-Results on all 10 customers (350,880 half-hourly readings, localhost):
-
-| k | secure = plaintext model | precision vs labels | recall vs labels | G-mean |
-|---|---|---|---|---|
-| 3 (Table A1) | 100% of readings | 0.983 | 0.675 | 0.821 |
-| 2.576 (99% interval, as in Jaiswal et al.) | 99.98–100% (differences only at the boundary, from fixed-point rounding) | 0.929 | 0.879 | 0.937 |
-
-Per customer: about 0.4 s of CKKS, 0.65 s of garbled circuits and 486 MiB of traffic between the brokers. The remaining gap to the published labels comes from their per-customer hyperparameter tuning, Prophet's Laplace changepoint prior and its simulated trend uncertainty, none of which are reproduced here.
-
-### Protocol VI: ML price forecasting on the Polish day-ahead market (Che & Wang, 2010)
-
-`src/protocol6_polish.cpp`, garbled-circuit SVR in `include/svr_gc.h`, model owner in `scripts/train_protocol6.py`.
-
-SVRARIMA as in the paper: min-max normalisation on the training window (Eq. 3.1); SVR on the phase-space reconstruction with m = 3, τ = 1 (Eq. 2.1–2.3); RBF kernel exp(−‖x − x′‖²/2δ²) with C = 1, δ = 20, ε = 0.001 (Figs. 4, 7); ARIMA on the SVR residuals with p = (24), d = (0), q = (1) for February weeks and p = (1, 24), d = (24), q = (1) for April weeks; training on the 7 days before each forecast week; one-hour-ahead forecasts; RMSE and MAPE. Test weeks are the paper's calendar weeks (Feb 26 – Mar 3, Apr 1 – 7) in 2018, 2019 and 2020.
-
-The model owner trains in the clear and secret-shares the model (Table A1 input β). Secure flow on shared prices:
-1. Garbled circuit: normalisation, then N_t = b + Σ α_k exp(−γ‖x_t − sv_k‖²) with support vectors, α and b all secret. exp is fixed point: 2^−y with y split into integer and fraction, a degree-4 polynomial for the fraction (error 3.5e-6) and a secret shift for the integer part. Residuals e_t = x_t − N_t leave the circuit as additive shares.
-2. CKKS cross terms: the ARIMA one-step forecast of the residual, written as its linear predictor Σ w_j e_{t−j} (AR(∞) form truncated at 144 lags).
-3. Garbled circuit: forecast = (N_t + L_t)·range + min, output as additive shares.
-
-```sh
-python3 scripts/train_protocol6.py <polish repo>/data/data.xlsx build
-cd build && ../run.sh ./protocol6_polish prices_p6.txt model_p6.txt reference_p6.txt
-```
-
-| week | MAPE, secure | MAPE, plaintext reference | SVR alone (plaintext) | max \|secure − reference\| |
-|---|---|---|---|---|
-| 2018-02-26 | 12.10% | 12.11% | 18.24% | 0.26 PLN |
-| 2019-02-26 | 5.94% | 5.96% | 14.31% | 0.24 PLN |
-| 2020-02-26 | 11.41% | 11.41% | 21.61% | 0.35 PLN |
-| 2018-04-01 | 7.35% | 7.35% | 26.87% | 0.30 PLN |
-| 2019-04-01 | 3.55% | 3.54% | 10.54% | 0.37 PLN |
-| 2020-04-01 | 5.18% | 5.18% | 17.10% | 0.38 PLN |
-
-As in the paper, the hybrid beats SVR alone every week. Cost per week (168 forecasts, 164 support vectors): about 13 s, 360 M AND gates and 11 GB of localhost traffic, almost all of it the 27,500 kernel evaluations in the garbled circuit.
 
 ## Protocol notes
 

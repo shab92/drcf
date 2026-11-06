@@ -32,6 +32,7 @@ struct Job {
     std::vector<double> y;
     long start = 0, count = 0;
     std::vector<int> lags; std::vector<double> coef;              // linear
+    int rowk = 0; std::vector<int> rowlag; std::vector<double> rowcoef, rowc;   // linear, one row per test point
     int npub = 0; std::vector<double> pubrows, pubcoef;
     double thresh = 0;                                            // anomaly (absolute, value units)
     std::vector<prophet_lite::Stamp> stamps; double k = 3; bool zero_rule = false, au = false; double yscale = 0;   // prophet
@@ -53,6 +54,10 @@ static Job load(const std::string& path) {
         else if (tag == "COEF") { int n; f >> n; j.coef.resize(n); for (auto& v : j.coef) f >> v; }
         else if (tag == "PUBLIC") { f >> j.npub; j.pubcoef.resize(j.npub); for (auto& v : j.pubcoef) f >> v; j.pubrows.resize((size_t)j.npub * j.count); for (auto& v : j.pubrows) f >> v; }
         else if (tag == "THRESH") f >> j.thresh;
+        else if (tag == "ROWS") {   // per test point: intercept, then k (lag, coef) pairs
+            f >> j.rowk; j.rowc.resize(j.count); j.rowlag.resize((size_t)j.count * j.rowk); j.rowcoef.resize((size_t)j.count * j.rowk);
+            for (long h = 0; h < j.count; h++) { f >> j.rowc[h]; for (int q = 0; q < j.rowk; q++) f >> j.rowlag[(size_t)h * j.rowk + q] >> j.rowcoef[(size_t)h * j.rowk + q]; }
+        }
         else if (tag == "STAMPS") { long n; f >> n; j.stamps.resize(n); for (auto& s : j.stamps) f >> s.y >> s.mo >> s.d >> s.h >> s.mi >> s.dow; }
         else if (tag == "PROPHET") { int z, a; f >> j.k >> z >> a >> j.yscale; j.zero_rule = z; j.au = a; }
         else if (tag == "NORM") f >> j.lo >> j.hi;
@@ -95,21 +100,30 @@ int main(int argc, char** argv) {
         return std::vector<int64_t>(f.begin(), f.end());
     };
 
-    if (J.model == "linear") {
+    if (J.model == "linear" && J.rowk > 0) {
+        // per-point linear predictors (e.g. multi-step ARIMA forecasts): y_hat_h = c_h + sum_q coef_hq * y(t_h - lag_hq)
+        const int K = J.rowk;
+        std::vector<double> x, bv, c_sh(C);
+        for (long h = 0; h < C; h++) {
+            c_sh[h] = split_d(J.rowc[h], 1 << 20);
+            for (int q = 0; q < K; q++) { x.push_back((double)yi[T0 + h - J.rowlag[(size_t)h * K + q]] / J.scale); bv.push_back(split_d(J.rowcoef[(size_t)h * K + q], 16.0)); }
+        }
+        auto yh = he::inner_products(io.get(), party, x, bv, K, hp);
+        std::vector<int64_t> yhq(C); for (long h = 0; h < C; h++) yhq[h] = std::llround((yh[h] + c_sh[h]) * J.scale);
+        if (anomaly) {
+            std::vector<int64_t> ys(yi.begin() + T0, yi.begin() + T0 + C);
+            out_i = decide(ys, yhq, split_i(std::llround(J.thresh * J.scale), 30)); out_xor = true;
+        } else out_i = yhq;
+    } else if (J.model == "linear") {
         const int K = (int)J.lags.size();
         std::vector<double> beta_sh(K), pc_sh(J.npub);
         for (int j = 0; j < K; j++) beta_sh[j] = split_d(J.coef[j], 16.0);
         for (int j = 0; j < J.npub; j++) pc_sh[j] = split_d(J.pubcoef[j], 16.0);
         std::vector<double> yh(C, 0.0);
         if (K > 0) {
-            const long per = std::max<long>(1, 4096 / K);
-            for (long h0 = 0; h0 < C; h0 += per) {
-                long n = std::min(per, C - h0);
-                std::vector<double> x, bv;
-                for (long h = h0; h < h0 + n; h++) for (int j = 0; j < K; j++) { x.push_back((double)yi[T0 + h - J.lags[j]] / J.scale); bv.push_back(beta_sh[j]); }
-                auto part = he::inner_products(io.get(), party, x, bv, K, hp);
-                for (long h = 0; h < n; h++) yh[h0 + h] = part[h];
-            }
+            std::vector<double> x, bv;
+            for (long h = 0; h < C; h++) for (int j = 0; j < K; j++) { x.push_back((double)yi[T0 + h - J.lags[j]] / J.scale); bv.push_back(beta_sh[j]); }
+            yh = he::inner_products(io.get(), party, x, bv, K, hp);
         }
         for (long h = 0; h < C; h++) for (int j = 0; j < J.npub; j++) yh[h] += J.pubrows[(size_t)h * J.npub + j] * pc_sh[j];
         std::vector<int64_t> yhq(C); for (long h = 0; h < C; h++) yhq[h] = std::llround(yh[h] * J.scale);

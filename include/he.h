@@ -100,27 +100,32 @@ inline std::vector<double> evaluator(Session& S, emp::IOChannel* io, const std::
     return g;
 }
 
-// Both brokers call this with their own real-valued shares of X and beta (n = groups * p).
-// Returns Y(i): this broker's additive share of <beta_g, X_g> for every group g.
+// Both brokers call this with their own real-valued shares of X and beta (n = groups * p, any length).
+// Returns Y(i): this broker's additive share of <beta_g, X_g> for every group g. One set of fresh keys per call;
+// groups are packed into as many ciphertexts as needed (a group never straddles two ciphertexts).
 inline std::vector<double> inner_products(emp::IOChannel* io, int party, const std::vector<double>& x,
                                           const std::vector<double>& beta, size_t p, const Params& P = Params()) {
     last = Stats{};
     auto t0 = std::chrono::steady_clock::now();
     Session S(P);                                             // fresh short-term keys for this evaluation
     last.keygen_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    if (x.size() > S.slots()) throw std::invalid_argument("too many slots");
-    last.slots_used = (int)x.size(); last.plain_bytes = x.size() * sizeof(double); last.slots = S.slots();
-    std::vector<double> y(x.size() / p, 0.0);
+    if (p == 0 || p > S.slots()) throw std::invalid_argument("group size must be in [1, slots]");
+    last.slots_used = (int)std::min(x.size(), S.slots()); last.plain_bytes = x.size() * sizeof(double); last.slots = S.slots();
+    const size_t G = x.size() / p, per = S.slots() / p;
+    std::vector<double> y(G, 0.0);
     for (size_t i = 0; i < x.size(); i++) y[i / p] += x[i] * beta[i];               // local term
-    std::vector<double> a, b;
-    if (party == emp::ALICE) { a = owner(S, io, x, p); b = evaluator(S, io, beta, p); }
-    else { a = evaluator(S, io, beta, p); b = owner(S, io, x, p); }
-    for (size_t g = 0; g < y.size(); g++) y[g] += a[g] + b[g];
+    for (size_t g0 = 0; g0 < G; g0 += per) {
+        size_t ng = std::min(per, G - g0);
+        std::vector<double> xc(x.begin() + g0 * p, x.begin() + (g0 + ng) * p), bc(beta.begin() + g0 * p, beta.begin() + (g0 + ng) * p);
+        std::vector<double> a, b;
+        if (party == emp::ALICE) { a = owner(S, io, xc, p); b = evaluator(S, io, bc, p); }
+        else { a = evaluator(S, io, bc, p); b = owner(S, io, xc, p); }
+        for (size_t g = 0; g < ng; g++) y[g0 + g] += a[g] + b[g];
+    }
     return y;                                                  // S (and sk_i) destroyed here
 }
 
-// Element-wise products of two shared vectors, any length: chunks of one ciphertext each,
-// fresh keys per chunk. Returns this broker's share of x[i] * y[i].
+// Element-wise shares of x_k * y_k (x, y additively shared), any length.
 inline std::vector<double> products(emp::IOChannel* io, int party, const std::vector<double>& x, const std::vector<double>& y,
                                     const Params& P = Params()) {
     std::vector<double> out; out.reserve(x.size());
