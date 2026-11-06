@@ -4,6 +4,8 @@ Reference implementation of **DRCF**, a publish-subscribe system in which the br
 
 > S. Saderi Oskouei, K. Mandal, A. A. Ghorbani. *DRCF: A Privacy-Enhanced Distributed Publish-Subscribe System for Secure Data Computation in Untrusted Environments.* ACM Transactions on Cyber-Physical Systems 10(3), Article 36, 2026. [doi:10.1145/3805045](https://doi.org/10.1145/3805045)
 
+**Live dashboard:** https://shab92.github.io/drcf/ (replay of a real two-broker run)
+
 **Status: research code.** Not audited, not constant-time, not for production use. See [Security model and limitations](#security-model-and-limitations).
 
 ## What is inside
@@ -18,7 +20,7 @@ Reference implementation of **DRCF**, a publish-subscribe system in which the br
 | Subscribe: TS.Sign | `include/dkls23.h` | 2-party threshold ECDSA on secp256k1 following Doerner, Kondi, Lee, shelat, *Threshold ECDSA in Three Rounds*, IEEE S&P 2024 (Protocol 3.4, n = t = 2). |
 | Alternative signature | `include/tsig.h` | 2-party Schnorr on secp256k1. |
 | End to end | `src/drcf_demo.cpp` | Publish → Compute → Subscribe on synthetic smart-meter data (load forecasting and anomaly alerts). Writes `trace.js` for the dashboard. |
-| Dashboard | `dashboard/index.html` | Self-contained page that replays a recorded run: protocol flow, what each broker sees, costs. |
+| Dashboard | `docs/index.html`, `scripts/make_dashboard.py` | Self-contained page that replays a recorded run: protocol flow, what each broker sees, forecasts and alerts, costs. |
 
 ## Build
 
@@ -58,6 +60,17 @@ cd build && ../run.sh ./drcf_demo     # full pipeline, writes trace.js
 ```
 
 On two machines, set `EMP_PEER_IP` and `EMP_PORT`, then start party 1 and party 2 separately.
+
+## Dashboard
+
+`docs/index.html` replays a recorded `drcf_demo` run in the browser: the protocol flow between publishers, B1, B2 and the subscriber; what each broker sees at every step (the page XORs the two shares to show they recover the real reading); attack scenarios (tampered publication, tampered result, a compromised broker); forecasts and alerts per meter; and the cost of each step. It is a single file with no server and opens offline.
+
+To rebuild it from your own run:
+
+```sh
+cd build && ../run.sh ./drcf_demo && cd ..
+python3 scripts/make_dashboard.py build/trace.js    # writes docs/index.html
+```
 
 ## Protocol notes
 
