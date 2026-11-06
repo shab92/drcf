@@ -1,73 +1,79 @@
-# DRCF in C++: two-broker pipeline (EMP-toolkit, SEAL, OpenSSL)
+# DRCF: two-broker privacy-preserving publish-subscribe in C++
 
-2-party distributed AEAD from DRCF (ACM TCPS 2026, Def. 5). ASCON-128 (v1.2) runs inside a
-Yao garbled circuit on EMP sh2pc. B1 = ALICE (garbler), B2 = BOB (evaluator).
-K = K1 ^ K2 and the plaintext never exist in either broker.
+Reference implementation of **DRCF**, a publish-subscribe system in which the broker role is split between two non-colluding brokers, B1 and B2. Publishers' data, keys, intermediate results and the subscriber's result are only ever held as shares; neither broker alone learns anything about them.
 
-- `dist_dec(K_i, N, AD, C||tag)` -> `{ok, M_i}` with M_1 ^ M_2 = M. On a bad tag, both get ⊥ and the plaintext is never opened.
-- `dist_enc(K_i, N, AD, Y_i)` -> C||tag of Y = Y_1 ^ Y_2, known to both.
+> S. Saderi Oskouei, K. Mandal, A. A. Ghorbani. *DRCF: A Privacy-Enhanced Distributed Publish-Subscribe System for Secure Data Computation in Untrusted Environments.* ACM Transactions on Cyber-Physical Systems 10(3), Article 36, 2026. [doi:10.1145/3805045](https://doi.org/10.1145/3805045)
 
-## Components
-| Paper step | File | How |
+**Status: research code.** Not audited, not constant-time, not for production use. See [Security model and limitations](#security-model-and-limitations).
+
+## What is inside
+
+| DRCF step | File | Realisation |
 |---|---|---|
-| DistAEAD.Enc / Dec | `include/distaead.h`, `include/ascon_circuit.h` | ASCON-128 inside a Yao GC (EMP sh2pc, half-gates) |
-| XOR ↔ additive shares, thresholds | `include/convert.h` | GC (EMP `UInt_T`), signed 64-bit additive shares |
-| Joint evaluation (regression) | `include/he.h` | CKKS (SEAL 4.1.2), fresh keys per broker per evaluation, encrypted cross terms, Y(i) = Dec(sk_i, C_T) + δ_i (Sec. 4.1.3) |
-| TS.KeyGen / TS.Sign | `include/dkls23.h`, `include/tsig.h` | Threshold ECDSA per Doerner, Kondi, Lee, shelat (S&P 2024) Protocol 3.4 with n = t = 2, and 2-party Schnorr, secp256k1 |
-| Full pipeline | `src/drcf_demo.cpp` | Publish → Compute → Subscribe, writes `trace.js` for the dashboard |
-
-## Files
-- `include/ascon_ref.h`: plain ASCON-128 (publishers and subscribers).
-- `include/ascon_circuit.h`: ASCON as a circuit over `emp::Bit_T`. Public bits are folded as constants, so they cost no gates.
-- `include/distaead.h`: `dist_dec`, `dist_enc` over `SH2PCSession`. Shares come out via EMP's XOR reveal.
-- `test/kat.h`: 61 known-answer vectors from the official Python reference (pyascon).
-- `test/test_ref.cpp`, `test/test_distaead.cpp`, `src/bench.cpp`.
+| Publish: DistAEAD.Dec | `include/distaead.h`, `include/ascon_circuit.h` | ASCON-128 (v1.2) evaluated in a Yao garbled circuit (EMP sh2pc, half-gates). K = K1 ⊕ K2 never exists. A bad tag gives ⊥ to both brokers before any plaintext share is released. |
+| Share conversion | `include/convert.h` | Garbled circuits: XOR shares → additive int64 shares (B2A), additive → XOR (A2B). |
+| Compute: joint evaluation | `include/he.h` | CKKS (Microsoft SEAL 4.1.2). For each evaluation every broker generates fresh keys, encrypts its own share, and the brokers exchange masked encrypted cross terms. Each broker ends with Y(i) = Dec(sk_i, C_T) + δ_i. |
+| Compute: decisions | `include/convert.h` | Thresholds and anomaly flags in a garbled circuit; outputs stay XOR-shared. |
+| Subscribe: DistAEAD.Enc | `include/distaead.h` | ASCON-128 encryption of the shared result under the subscriber's key, in a garbled circuit. |
+| Subscribe: TS.Sign | `include/dkls23.h` | 2-party threshold ECDSA on secp256k1 following Doerner, Kondi, Lee, shelat, *Threshold ECDSA in Three Rounds*, IEEE S&P 2024 (Protocol 3.4, n = t = 2). |
+| Alternative signature | `include/tsig.h` | 2-party Schnorr on secp256k1. |
+| End to end | `src/drcf_demo.cpp` | Publish → Compute → Subscribe on synthetic smart-meter data (load forecasting and anomaly alerts). Writes `trace.js` for the dashboard. |
+| Dashboard | `dashboard/index.html` | Self-contained page that replays a recorded run: protocol flow, what each broker sees, costs. |
 
 ## Build
-Needs EMP-toolkit (emp-tool, emp-ot, emp-sh2pc; current master, C++20 `SH2PCSession` API), Microsoft SEAL 4.1 and OpenSSL 3.
 
-## CKKS joint evaluation (Sec. 4.1.3)
-`include/he.h` follows the paper: real-valued shares X = X1 + X2 and β = β1 + β2. For each joint evaluation every broker generates fresh CKKS keys, encrypts its own share, and the brokers exchange encrypted cross terms (C(1)·β2 + δ, C(2)·β1 + δ′). Each broker outputs Y(i) = Dec(sk_i, C_T) + δ_i; the keys are erased afterwards. For thresholds, each broker rounds Y(i) to fixed point and the brokers continue in a garbled circuit.
+Requirements: a C++20 compiler, CMake ≥ 3.16, OpenSSL 3, [EMP-toolkit](https://github.com/emp-toolkit) (emp-tool, emp-ot, emp-sh2pc; current master with the `SH2PCSession` API) and [Microsoft SEAL 4.1.2](https://github.com/microsoft/SEAL) built with zstd.
 
-Parameters: N = 8192, coeff modulus {40, 40, 40, 40, 40} (200 bits, inside SEAL's 128-bit table), scale 2^40, one rescale after the plaintext multiplication. Each broker encrypts its own share under its own secret key (SEAL seeded symmetric encryption) and ciphertexts are serialised with zstd. This reproduces Table 6 of the paper: a fresh ciphertext holding 4096 values is 6.02-6.03x the size of the plaintext (as 8-byte doubles); the paper reports 6.02-6.09x. The settings were chosen by matching that expansion, since the original code is not available; they also give large headroom (about 2^79 after rescale), so masks can be big: δ up to 2^30, reading shares up to 2^20, β shares up to 2^10. Measured error: under 1e-5 on the cross terms themselves; end to end it is the mWh rounding before the GC (about 1e-3).
-
-## Threshold ECDSA (DKLs23)
-`include/dkls23.h` follows Protocol 3.4 of "Threshold ECDSA in Three Rounds" (Doerner, Kondi, Lee, shelat, IEEE S&P 2024) for two parties:
-- Setup: commit-release key generation (FRelaxedKeyGen for n = t = 2), additive shares sk = sk1 + sk2, FZero PRF key.
-- Round 1: instance key r_i, inversion mask φ_i, commitment to R_i, RVOLE instance toward the other party.
-- Round 2: sk_i rerandomised with the FZero mask, RVOLE multiplication of {r_i, sk_i}, check-adjust message (Γu, Γv, ψ, pk_i), decommit R_i.
-- Round 3: consistency checks χ·R_j − Γu = du·G and χ·pk_j − Γv = dv·G, Σpk = pk, then u_i, v_i, w_i; s = Σw / Σu, output only if ECDSA verification passes.
-
-Realisation choices: FCom is a salted SHA-256 commitment. FRVOLE(q, 2) is built from EMP's SoftSpokenOT (malicious-secure OT extension) with Bob's randomised gadget encoding of χ (length κ + 2λs = 416). The paper's own optimised two-round VOLE is in its full version and is not reproduced. The test (`test_dkls23`) also checks that a party committing to a wrong R_i, or sending a wrong pk_i, is caught by the step-8 checks.
-```
-# EMP (once)
+```sh
+# EMP-toolkit (once)
 for r in emp-tool emp-ot emp-sh2pc; do
   git clone https://github.com/emp-toolkit/$r.git
   cmake -S $r -B $r/build -DCMAKE_INSTALL_PREFIX=$HOME/emp -DCMAKE_PREFIX_PATH=$HOME/emp -DCMAKE_BUILD_TYPE=Release
   cmake --build $r/build -j && cmake --install $r/build
 done
+
 # SEAL (once)
 git clone --branch v4.1.2 https://github.com/microsoft/SEAL.git
-cmake -S SEAL -B SEAL/build -DCMAKE_INSTALL_PREFIX=$HOME/seal -DSEAL_USE_MSGSL=OFF -DSEAL_USE_ZLIB=ON -DSEAL_USE_ZSTD=ON   # zstd is needed for Table 6 sizes
+cmake -S SEAL -B SEAL/build -DCMAKE_INSTALL_PREFIX=$HOME/seal -DCMAKE_BUILD_TYPE=Release \
+      -DSEAL_USE_MSGSL=OFF -DSEAL_USE_ZLIB=ON -DSEAL_USE_ZSTD=ON
 cmake --build SEAL/build -j && cmake --install SEAL/build
-# this project
-cmake -S . -B build -DCMAKE_PREFIX_PATH="$HOME/emp;$HOME/seal" && cmake --build build -j
+
+# DRCF
+cmake -S . -B build -DCMAKE_PREFIX_PATH="$HOME/emp;$HOME/seal"
+cmake --build build -j
 ```
 
 ## Run
-```
-./build/test_ref                     # 61/61 vs KAT
-./run.sh build/test_distaead         # B1 + B2: publisher -> dist_dec -> dist_enc -> subscriber, tamper check
-./run.sh build/bench 10              # cost table
-./run.sh build/test_dkls23           # DKLs23 threshold ECDSA: honest runs + two cheating parties caught
-./run.sh build/test_tsig             # 2-party Schnorr
-./run.sh build/test_compute          # B2A, HE cross terms, A2B, threshold
-cd build && ../run.sh ./drcf_demo    # whole DRCF pipeline, writes trace.js
-```
-For two machines, set `EMP_PEER_IP` and `EMP_PORT` and start party 1 and party 2 separately.
 
-## Results (localhost, 2 cores, 10 reps, AD = 5 bytes)
-| op | msg bytes | AND gates | comm (KiB) | ms/op |
+Every two-party program takes the party number (1 = B1, 2 = B2). `run.sh` starts both locally.
+
+```sh
+./build/test_ref                      # ASCON-128 vs 61 known-answer vectors
+./run.sh build/test_distaead          # DistAEAD: publisher -> dist_dec -> dist_enc -> subscriber, tamper check
+./run.sh build/test_compute           # B2A, CKKS cross terms, A2B, threshold
+./run.sh build/test_dkls23            # threshold ECDSA: honest runs and two cheating parties caught
+./run.sh build/test_tsig              # 2-party Schnorr
+./run.sh build/bench 10               # DistAEAD cost vs message size
+cd build && ../run.sh ./drcf_demo     # full pipeline, writes trace.js
+```
+
+On two machines, set `EMP_PEER_IP` and `EMP_PORT`, then start party 1 and party 2 separately.
+
+## Protocol notes
+
+**DistAEAD.** ASCON-128 is written as a boolean circuit; public values (IV, nonce, associated data, ciphertext, tag) are folded as constants and cost no gates. One permutation round is 320 AND gates. With a = ⌊|AD|/8⌋+1 associated-data blocks (0 if AD is empty) and m = ⌊|M|/8⌋+1 message blocks, encryption costs (24 + 6a + 6(m − 1))·320 − 256 AND gates; decryption adds 127 for the in-circuit tag comparison. Decryption first opens only the tag bit; plaintext shares are released (as XOR shares) only if it is 1.
+
+**CKKS joint evaluation.** Shares are real numbers: X = X1 + X2, β = β1 + β2. B1 sends C(1) = Enc(sk1, X1); B2 returns C_T = C(1)·β2 + δ with a fresh random mask δ; B1 decrypts. The symmetric exchange gives B2 the other cross term. Adding the local term X_i·β_i and subtracting its own mask, each broker holds a share Y(i) of ⟨β, X⟩. Keys are generated per evaluation and discarded. Parameters: N = 8192, coefficient modulus {40, 40, 40, 40, 40}, scale 2^40, seeded symmetric encryption, zstd serialisation. A fresh ciphertext holding 4096 values is about 6.0× the plaintext size, as reported in the paper (Table 6). Cross-term error is below 1e-5; values entering a garbled circuit are rounded to fixed point (×1000).
+
+**Threshold ECDSA.** Follows Protocol 3.4 of DKLs23 for two parties: commit-release key generation, per-signature instance keys r_i and inversion masks φ_i, a randomised VOLE on {r_i, sk_i}, the step-8 consistency checks (χ·R_j − Γᵘ = dᵘ·G and χ·pk_j − Γᵛ = dᵛ·G), and s = Σw / Σu, released only if ECDSA verification passes. F_Com is a salted SHA-256 commitment; F_Zero uses a PRF key agreed at setup. The VOLE is built from EMP's SoftSpokenOT (malicious-secure OT extension) with a randomised gadget encoding of χ (length 416); it is not the optimised two-round VOLE from the full version of DKLs23.
+
+## Results
+
+Localhost, 2 vCPUs. Timings depend on hardware and network.
+
+DistAEAD (10 repetitions, 5-byte AD):
+
+| op | message bytes | AND gates | traffic (KiB) | ms |
 |---|---|---|---|---|
 | Enc | 8 | 11,264 | 352 | 1.8 |
 | Dec | 8 | 11,391 | 356 | 1.6 |
@@ -76,17 +82,33 @@ For two machines, set `EMP_PEER_IP` and `EMP_PORT` and start party 1 and party 2
 | Enc | 256 | 70,784 | 2,242 | 7.6 |
 | Dec | 256 | 70,910 | 2,216 | 7.5 |
 
-Each permutation round is 320 AND gates. With padding, a = ⌊|AD|/8⌋+1 AD blocks (0 if AD is empty) and m = ⌊|M|/8⌋+1 message blocks,
-ANDs = (24 + 6a + 6(m − 1))·320 − 256 (the first round partly folds, since IV and nonce are public), plus 127 for the tag check in Dec.
-Check: 8-byte message, 5-byte AD: (24 + 6 + 6)·320 − 256 = 11,264.
+Full pipeline (`drcf_demo`: 3 meters × 168 hours, 504 publications, 432 forecasts, one subscriber request): about 1 s end to end and about 195 MiB between the brokers. DistAEAD.Dec takes most of the time. CKKS cross terms for all 432 forecasts take about 70 ms, including key generation. Threshold ECDSA: about 13 ms and 135 KiB per signature after setup. Schnorr: about 0.5 ms.
 
-## Full pipeline (drcf_demo, 3 meters × 168 h, localhost)
-504 publications, 432 forecasts, 1 subscriber request. About 1 s end to end, 195 MiB between the brokers, 6.3 M AND gates.
-DistAEAD.Dec is 84% of the time. CKKS cross terms for all 432 forecasts: about 70 ms including fresh key generation (about 20 ms). DKLs23 ECDSA: about 13 ms and 135 KiB per signature after setup. 2-party Schnorr: 0.5 ms.
+## Security model and limitations
 
-## Caveats
-- Semi-honest (as in the paper). Not audited. Not constant-time. Localhost numbers have no network latency.
-- CKKS: shares and masks are real numbers with bounded range, so hiding is statistical: about 8 bits of margin for readings (mask 2^20 vs readings up to about 3,000 Wh), about 10 bits for the AR coefficients (mask 2^10) and about 4 bits for the intercept (45.6). The evaluator's reply has no noise flooding, so a key owner who inspects CKKS noise could learn a little about the other's β share. Results are approximate (see above).
-- ECDSA: the DKLs23 consistency checks are implemented; the VOLE is OT-based but is not the paper's exact two-round VOLE (full version).
-- The paper's Sec. 4.1.4 describes a Schnorr-style threshold signature while Sec. 5 implements threshold ECDSA (DKLs23). Both are here.
-- drcf_demo's harness gives both processes the same seed (synthetic data) and simulates publishers and the subscriber inside B1's process. Brokers only feed their own shares into the protocols.
+- **Adversary.** Two brokers that do not collude. Garbled circuits, share conversions and CKKS evaluation are secure against semi-honest brokers, as in the paper. Threshold signing additionally detects a broker that deviates (DKLs23 consistency checks over malicious-secure OT).
+- **CKKS shares are statistically hidden.** Real-valued shares and masks have bounded range, so hiding is statistical: about 8 bits of margin for meter readings (mask 2^20), about 10 bits for model coefficients (mask 2^10), less for large coefficients such as an intercept. The evaluator's reply has no noise flooding. Results are approximate.
+- **Not audited, not constant-time.** Do not use with real keys or data.
+- **Demo harness.** `drcf_demo` gives both broker processes the same seed to generate synthetic data and simulates the publishers and the subscriber inside B1's process; brokers only feed their own shares into the protocols.
+- **Not yet included.** MQTT/Mosquitto integration, dataset loaders, and the six analytics protocols of the paper (Table A1).
+
+## Citation
+
+Please cite the DRCF paper if you use this code. GitHub shows a "Cite this repository" button generated from `CITATION.cff`.
+
+```bibtex
+@article{SaderiOskouei2026DRCF,
+  author  = {Saderi Oskouei, Shabnam and Mandal, Kalikinkar and Ghorbani, Ali A.},
+  title   = {{DRCF}: A Privacy-Enhanced Distributed Publish-Subscribe System for Secure Data Computation in Untrusted Environments},
+  journal = {ACM Transactions on Cyber-Physical Systems},
+  volume  = {10},
+  number  = {3},
+  articleno = {36},
+  year    = {2026},
+  doi     = {10.1145/3805045}
+}
+```
+
+## License
+
+MIT, see [LICENSE](LICENSE). Dependencies keep their own licenses: EMP-toolkit (Apache-2.0), Microsoft SEAL (MIT), OpenSSL 3 (Apache-2.0). The ASCON test vectors in `test/kat.h` were generated with the reference implementation [pyascon](https://github.com/meichlseder/pyascon) (CC0).

@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the DRCF paper below."
+title: "DRCF: reference implementation of a privacy-enhanced two-broker publish-subscribe system"
+type: software
+license: MIT
+repository-code: "https://github.com/shab92/drcf"
+authors:
+  - family-names: "Saderi Oskouei"
+    given-names: "Shabnam"
+    affiliation: "University of New Brunswick, Canadian Institute for Cybersecurity"
+preferred-citation:
+  type: article
+  title: "DRCF: A Privacy-Enhanced Distributed Publish-Subscribe System for Secure Data Computation in Untrusted Environments"
+  authors:
+    - family-names: "Saderi Oskouei"
+      given-names: "Shabnam"
+    - family-names: "Mandal"
+      given-names: "Kalikinkar"
+    - family-names: "Ghorbani"
+      given-names: "Ali A."
+  journal: "ACM Transactions on Cyber-Physical Systems"
+  volume: 10
+  issue: 3
+  start: 1
+  end: 22
+  notes: "Article 36"
+  year: 2026
+  month: 5
+  doi: "10.1145/3805045"
